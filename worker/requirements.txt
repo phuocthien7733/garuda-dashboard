@@ -1,0 +1,4 @@
+motor==3.7.0
+pydantic==2.11.2
+pydantic-settings==2.8.1
+watchdog==6.0.0

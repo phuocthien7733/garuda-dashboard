@@ -1,0 +1,10 @@
+FROM node:20-alpine
+WORKDIR /app
+
+# Copy package để cài thư viện
+COPY package.json package-lock.json* ./
+RUN npm install
+
+EXPOSE 5173
+# Chạy Vite mở ra mạng Docker
+CMD ["npm", "run", "dev", "--", "--host", "0.0.0.0"]

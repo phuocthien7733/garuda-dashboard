@@ -1,0 +1,73 @@
+services:
+  mongodb:
+    image: mongo:6.0
+    container_name: easm_mongodb
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: rootadmin
+      MONGO_INITDB_ROOT_PASSWORD: rootpassword_cuc_kho
+      MONGO_INITDB_DATABASE: easm_db
+    volumes:
+      - ./mongo_data:/data/db
+      - ./mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
+    ports:
+      - "27017:27017"
+    networks:
+      - easm_net
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.dev
+    container_name: easm_backend
+    restart: unless-stopped
+    volumes:
+      - ./backend:/app
+    environment:
+      - MONGO_URI=mongodb://easm_app_user:SuperSecretPassword123!@mongodb:27017/easm_db?authSource=easm_db
+      - JWT_SECRET=ThienVuongDoMenh_BiMatTuyeDoi_2026!@#
+    ports:
+      - "8000:8000"
+    depends_on:
+      - mongodb
+    networks:
+      - easm_net
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: easm_frontend
+    restart: unless-stopped
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - VITE_API_BASE_URL=http://localhost:8000
+      # Quan trọng cho Windows: Ép Vite dùng Polling để nhận diện file thay đổi
+      - CHOKIDAR_USEPOLLING=true 
+      - WATCHPACK_POLLING=true
+    ports:
+      - "5173:5173"
+    networks:
+      - easm_net
+
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile.dev
+    container_name: easm_worker
+    restart: unless-stopped
+    volumes:
+      - ./worker:/app
+      - ./worker/data:/app/data
+    environment:
+      - MONGO_URI=mongodb://easm_app_user:SuperSecretPassword123!@mongodb:27017/easm_db?authSource=easm_db
+    depends_on:
+      - mongodb
+    networks:
+      - easm_net
+
+networks:
+  easm_net:
+    driver: bridge
