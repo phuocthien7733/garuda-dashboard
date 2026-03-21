@@ -313,12 +313,14 @@ onMounted(() => {
             Review every host, its exposed infrastructure, and the total vulnerability load before pivoting into asset detail.
           </p>
         </div>
-        <span class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-300">
-          Total: {{ assets.length }}
-        </span>
-        <span class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-300">
-          Filtered: {{ totalFiltered }}
-        </span>
+        <div class="flex flex-wrap items-center gap-2 xl:justify-end">
+          <span class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-300">
+            Total: {{ assets.length }}
+          </span>
+          <span class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-300">
+            Filtered: {{ totalFiltered }}
+          </span>
+        </div>
       </div>
 
       <div v-if="loading" class="mt-6 rounded-[1.25rem] border border-white/10 bg-slate-950/50 px-5 py-10 text-center text-sm text-slate-400">

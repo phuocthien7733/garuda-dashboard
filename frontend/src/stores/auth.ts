@@ -53,7 +53,38 @@ export const useAuthStore = defineStore("auth", () => {
     return Boolean(mfaChallenge.value) && Date.now() < (mfaChallenge.value?.expiresAt ?? 0);
   });
 
+  function hydrateMfaChallengeFromStorage() {
+    const storedChallenge = sessionStorage.getItem("easm_mfa_challenge");
+    if (!storedChallenge) {
+      mfaChallenge.value = null;
+      return;
+    }
+
+    try {
+      const parsed = JSON.parse(storedChallenge) as MfaChallengeState;
+      if (parsed.expiresAt > Date.now()) {
+        mfaChallenge.value = parsed;
+      } else {
+        clearMfaChallenge();
+      }
+    } catch {
+      clearMfaChallenge();
+    }
+  }
+
+  function clearAuthState() {
+    token.value = "";
+    role.value = "viewer";
+    username.value = "";
+    expiresAt.value = null;
+    localStorage.removeItem("easm_token");
+    localStorage.removeItem("easm_role");
+    localStorage.removeItem("easm_username");
+  }
+
   function hydrateSessionFromStorage() {
+    hydrateMfaChallengeFromStorage();
+
     const storedToken = localStorage.getItem("easm_token") ?? "";
     const storedRole = localStorage.getItem("easm_role") ?? "";
     const storedUsername = localStorage.getItem("easm_username") ?? "";
@@ -69,26 +100,12 @@ export const useAuthStore = defineStore("auth", () => {
     expiresAt.value = payloadExp;
 
     if (!storedToken || !storedUsername || !isAllowedRole(storedRole.toLowerCase()) || isSessionExpired()) {
-      clearSession();
+      clearAuthState();
       return;
     }
 
     if (storedRole.toLowerCase() !== role.value) {
-      clearSession();
-    }
-
-    const storedChallenge = sessionStorage.getItem("easm_mfa_challenge");
-    if (storedChallenge) {
-      try {
-        const parsed = JSON.parse(storedChallenge) as MfaChallengeState;
-        if (parsed.expiresAt > Date.now()) {
-          mfaChallenge.value = parsed;
-        } else {
-          clearMfaChallenge();
-        }
-      } catch {
-        clearMfaChallenge();
-      }
+      clearAuthState();
     }
   }
 
@@ -113,13 +130,7 @@ export const useAuthStore = defineStore("auth", () => {
   }
 
   function clearSession() {
-    token.value = "";
-    role.value = "viewer";
-    username.value = "";
-    expiresAt.value = null;
-    localStorage.removeItem("easm_token");
-    localStorage.removeItem("easm_role");
-    localStorage.removeItem("easm_username");
+    clearAuthState();
     clearMfaChallenge();
   }
 

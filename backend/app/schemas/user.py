@@ -15,9 +15,18 @@ class PasswordResetRequest(BaseModel):
     password: str
 
 
+class UserUpdate(BaseModel):
+    username: str
+    email: EmailStr
+    role: str
+    mfa_enabled: bool = False
+    password: str | None = None
+
+
 class UserResponse(BaseModel):
     username: str
     email: EmailStr | None = None
     role: str
     mfa_enabled: bool = False
     created_at: datetime | None = None
+    updated_at: datetime | None = None

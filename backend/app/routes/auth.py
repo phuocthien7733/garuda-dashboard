@@ -142,18 +142,16 @@ async def update_profile(
     if existing_email:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Email already exists.")
 
-    mfa_state_changed = bool(user.get("mfa_enabled")) != bool(payload.mfa_enabled)
-
-    if payload.current_password and not payload.new_password and not mfa_state_changed:
+    if payload.current_password and not payload.new_password:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
             detail="No protected profile change requested for the provided current password.",
         )
 
-    if (payload.new_password or mfa_state_changed) and not payload.current_password:
+    if payload.new_password and not payload.current_password:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail="Current password is required to change password or MFA settings.",
+            detail="Current password is required to change password.",
         )
 
     update_fields = {
@@ -163,7 +161,7 @@ async def update_profile(
         "updated_at": datetime.now(timezone.utc),
     }
 
-    if payload.new_password or mfa_state_changed:
+    if payload.new_password:
         current_password = payload.current_password or ""
         if not verify_password(current_password, user.get("password_hash", "")):
             raise HTTPException(

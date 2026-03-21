@@ -50,6 +50,9 @@ async def refresh_mfa_challenge(db, challenge: dict) -> tuple[dict, str]:
 
 def is_mfa_code_valid(challenge: dict, code: str) -> bool:
     expires_at = challenge.get("expires_at")
+    if isinstance(expires_at, datetime) and expires_at.tzinfo is None:
+        expires_at = expires_at.replace(tzinfo=timezone.utc)
+
     if expires_at and expires_at < datetime.now(timezone.utc):
         return False
     return verify_mfa_code(challenge["challenge_id"], code, challenge["code_hash"])

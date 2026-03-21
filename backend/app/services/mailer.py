@@ -26,7 +26,7 @@ def build_mfa_email_html(username: str, otp_code: str, expires_minutes: int) -> 
               <p style="margin:0;font-size:11px;letter-spacing:0.36em;text-transform:uppercase;color:#fdba74;">Test And Watch Security</p>
               <h1 style="margin:16px 0 0;font-size:30px;line-height:1.15;color:#ffffff;font-weight:800;">Multi-Factor Authentication Challenge</h1>
               <p style="margin:18px 0 0;font-size:15px;line-height:1.8;color:#cbd5e1;">
-                A protected sign-in attempt was initiated for <strong style="color:#ffffff;">{username}</strong> on the Test And Watch EASM platform.
+                A protected sign-in attempt was initiated for <strong style="color:#ffffff;">{username}</strong> on the T&W Falcon.
               </p>
             </div>
             <div style="padding:32px;">

@@ -24,9 +24,12 @@ const authStore = useAuthStore();
 
 const loading = ref(true);
 const saving = ref(false);
+const mfaSaving = ref(false);
 const errorMessage = ref("");
 const successMessage = ref("");
 const initialMfaEnabled = ref(false);
+const savedUsername = ref("");
+const savedEmail = ref("");
 
 const form = reactive({
   username: "",
@@ -74,6 +77,8 @@ async function loadProfile() {
     form.createdAt = data.created_at ?? "";
     form.mfaEnabled = Boolean(data.mfa_enabled);
     initialMfaEnabled.value = form.mfaEnabled;
+    savedUsername.value = data.username;
+    savedEmail.value = data.email ?? "";
   } catch (error) {
     console.error(error);
     errorMessage.value = "Unable to load your profile information right now.";
@@ -113,11 +118,6 @@ async function saveProfile() {
     }
   }
 
-  if (form.mfaEnabled !== initialMfaEnabled.value && !form.currentPassword) {
-    errorMessage.value = "Current password is required to activate or deactivate MFA.";
-    return;
-  }
-
   saving.value = true;
 
   try {
@@ -135,6 +135,8 @@ async function saveProfile() {
     form.email = data.email ?? form.email;
     form.role = data.role;
     initialMfaEnabled.value = form.mfaEnabled;
+    savedUsername.value = form.username;
+    savedEmail.value = form.email;
     form.currentPassword = "";
     form.newPassword = "";
     form.confirmPassword = "";
@@ -150,6 +152,38 @@ async function saveProfile() {
 onMounted(async () => {
   await loadProfile();
 });
+
+async function toggleMfaState() {
+  errorMessage.value = "";
+  successMessage.value = "";
+
+  mfaSaving.value = true;
+  const nextMfaState = !form.mfaEnabled;
+
+  try {
+    const { data } = await api.patch<TokenResponse>("/auth/me", {
+      username: savedUsername.value,
+      email: savedEmail.value.trim().toLowerCase(),
+      mfa_enabled: nextMfaState,
+    });
+
+    authStore.setSession(data.access_token, data.role, data.username);
+    form.username = data.username;
+    form.email = data.email ?? form.email;
+    form.mfaEnabled = nextMfaState;
+    initialMfaEnabled.value = nextMfaState;
+    savedUsername.value = form.username;
+    savedEmail.value = form.email;
+    successMessage.value = nextMfaState
+      ? "MFA has been activated successfully."
+      : "MFA has been deactivated successfully.";
+  } catch (error: any) {
+    console.error(error);
+    errorMessage.value = error?.response?.data?.detail ?? "Unable to update MFA right now.";
+  } finally {
+    mfaSaving.value = false;
+  }
+}
 </script>
 
 <template>
@@ -240,23 +274,37 @@ onMounted(async () => {
           </div>
 
           <div class="rounded-[1.25rem] border border-white/10 bg-white/[0.03] p-4">
-            <div class="flex items-start justify-between gap-4">
+            <div class="flex flex-col gap-4 md:flex-row md:items-center md:justify-between">
               <div>
                 <p class="text-sm font-semibold text-white">Email MFA Protection</p>
                 <p class="mt-1 text-xs leading-6 text-slate-500">
-                  Enable a second-factor email challenge for operator login. Toggling this protection requires your current password.
+                  Enable a second-factor email challenge for operator login. Changes are applied immediately when you activate or deactivate MFA.
                 </p>
+                <div class="mt-3 inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.2em]"
+                  :class="form.mfaEnabled
+                    ? 'border-orange-400/30 bg-orange-500/10 text-orange-100'
+                    : 'border-white/10 bg-white/[0.04] text-slate-300'"
+                >
+                  <span
+                    class="h-2 w-2 rounded-full"
+                    :class="form.mfaEnabled
+                      ? 'bg-orange-300 shadow-[0_0_16px_rgba(251,146,60,0.8)]'
+                      : 'bg-slate-500'"
+                  />
+                  {{ form.mfaEnabled ? "MFA Active" : "MFA Inactive" }}
+                </div>
               </div>
+
               <button
                 type="button"
-                class="relative inline-flex h-7 w-14 shrink-0 rounded-full border transition"
-                :class="form.mfaEnabled ? 'border-orange-400/40 bg-orange-500/20' : 'border-white/10 bg-white/[0.05]'"
-                @click="form.mfaEnabled = !form.mfaEnabled"
+                class="inline-flex items-center justify-center rounded-[1rem] border px-4 py-2.5 text-sm font-semibold transition"
+                :class="form.mfaEnabled
+                  ? 'border-red-400/30 bg-red-500/10 text-red-100 hover:border-red-300/45 hover:bg-red-500/18'
+                  : 'border-orange-400/30 bg-orange-500/12 text-orange-100 hover:border-orange-300/45 hover:bg-orange-500/22'"
+                :disabled="mfaSaving"
+                @click="toggleMfaState"
               >
-                <span
-                  class="absolute top-1 h-5 w-5 rounded-full transition"
-                  :class="form.mfaEnabled ? 'left-8 bg-orange-300 shadow-[0_0_24px_rgba(251,146,60,0.55)]' : 'left-1 bg-slate-400'"
-                />
+                {{ mfaSaving ? "Updating MFA..." : form.mfaEnabled ? "Deactivate MFA" : "Activate MFA" }}
               </button>
             </div>
           </div>
@@ -322,10 +370,9 @@ onMounted(async () => {
 
       <article class="rounded-[1.6rem] border border-white/10 bg-slate-900/65 p-5 backdrop-blur">
         <p class="text-[11px] uppercase tracking-[0.24em] text-orange-300">Security</p>
-        <h3 class="mt-2 text-2xl font-black text-white">MFA Readiness</h3>
+        <h3 class="mt-2 text-2xl font-black text-white">Your Information</h3>
         <p class="mt-3 text-sm text-slate-400">
-          The email address in your profile will be the delivery channel for future MFA codes and account recovery
-          notices.
+
         </p>
 
         <div class="mt-5 space-y-3">
@@ -351,8 +398,8 @@ onMounted(async () => {
           <div class="rounded-[1.1rem] border border-white/10 bg-white/[0.03] p-4">
             <p class="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Operational Note</p>
             <p class="mt-2 text-sm text-slate-300">
-              Keep your email current so we can layer MFA safely into the platform without breaking access for the red
-              team.
+          The email address in your profile will be the delivery channel for future MFA codes and account recovery
+          notices.
             </p>
           </div>
         </div>
