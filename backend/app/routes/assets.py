@@ -191,7 +191,7 @@ async def get_asset_network(asset_id: str, _: CurrentUser = Depends(require_role
                 "category": "root_domain",
                 "detail": {
                     "asset_id": None,
-                    "ip": _format_detail_list(focus_ip_addresses),
+                    "ip": "--",
                     "host": focus_root_domain,
                     "ports": "--",
                     "services": "--",

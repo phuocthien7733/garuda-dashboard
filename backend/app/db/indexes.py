@@ -10,5 +10,8 @@ async def ensure_indexes() -> None:
     await db.vulnerabilities.create_index([("asset_id", ASCENDING)])
     await db.assets.create_index([("host", ASCENDING)], unique=True)
     await db.users.create_index([("username", ASCENDING)], unique=True)
+    await db.users.create_index([("email", ASCENDING)], unique=True, sparse=True)
+    await db.mfa_challenges.create_index([("challenge_id", ASCENDING)], unique=True)
+    await db.mfa_challenges.create_index([("expires_at", ASCENDING)], expireAfterSeconds=0)
     await db.revoked_tokens.create_index([("token_id", ASCENDING)], unique=True)
     await db.revoked_tokens.create_index([("expires_at", ASCENDING)], expireAfterSeconds=0)

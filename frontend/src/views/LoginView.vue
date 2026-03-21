@@ -23,11 +23,22 @@ async function submitLogin() {
   failedAttempt.value = false;
 
   try {
-    const { data } = await api.post("/api/auth/login", form);
+    const { data } = await api.post("/auth/login", form);
+    if (data.mfa_required) {
+      authStore.setMfaChallenge(
+        data.challenge_id,
+        data.username,
+        data.masked_email ?? data.email ?? "",
+        data.challenge_expires_in_seconds ?? 600,
+      );
+      await router.push({ name: "mfa-verify" });
+      return;
+    }
+
     authStore.setSession(data.access_token, data.role, data.username);
     await router.push({ name: "dashboard" });
-  } catch (error) {
-    errorMessage.value = "Login failed. Please verify your credentials.";
+  } catch (error: any) {
+    errorMessage.value = error?.response?.data?.detail ?? "Login failed. Please verify your credentials.";
     failedAttempt.value = true;
     window.setTimeout(() => {
       failedAttempt.value = false;

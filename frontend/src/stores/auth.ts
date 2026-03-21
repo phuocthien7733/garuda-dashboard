@@ -2,6 +2,12 @@ import { computed, ref } from "vue";
 import { defineStore } from "pinia";
 
 type SessionRole = "admin" | "viewer";
+type MfaChallengeState = {
+  challengeId: string;
+  username: string;
+  maskedEmail: string;
+  expiresAt: number;
+};
 
 type JwtPayload = {
   exp?: number;
@@ -36,12 +42,16 @@ export const useAuthStore = defineStore("auth", () => {
   const role = ref<SessionRole>("viewer");
   const username = ref(localStorage.getItem("easm_username") ?? "");
   const expiresAt = ref<number | null>(null);
+  const mfaChallenge = ref<MfaChallengeState | null>(null);
 
   const isAuthenticated = computed(() => {
     return Boolean(token.value) && Boolean(username.value) && !isSessionExpired();
   });
 
   const isAdmin = computed(() => role.value === "admin");
+  const hasPendingMfaChallenge = computed(() => {
+    return Boolean(mfaChallenge.value) && Date.now() < (mfaChallenge.value?.expiresAt ?? 0);
+  });
 
   function hydrateSessionFromStorage() {
     const storedToken = localStorage.getItem("easm_token") ?? "";
@@ -66,6 +76,20 @@ export const useAuthStore = defineStore("auth", () => {
     if (storedRole.toLowerCase() !== role.value) {
       clearSession();
     }
+
+    const storedChallenge = sessionStorage.getItem("easm_mfa_challenge");
+    if (storedChallenge) {
+      try {
+        const parsed = JSON.parse(storedChallenge) as MfaChallengeState;
+        if (parsed.expiresAt > Date.now()) {
+          mfaChallenge.value = parsed;
+        } else {
+          clearMfaChallenge();
+        }
+      } catch {
+        clearMfaChallenge();
+      }
+    }
   }
 
   function setSession(nextToken: string, nextRole: string, nextUsername: string) {
@@ -85,6 +109,7 @@ export const useAuthStore = defineStore("auth", () => {
     localStorage.setItem("easm_token", nextToken);
     localStorage.setItem("easm_role", normalizedRole);
     localStorage.setItem("easm_username", nextUsername);
+    clearMfaChallenge();
   }
 
   function clearSession() {
@@ -95,6 +120,7 @@ export const useAuthStore = defineStore("auth", () => {
     localStorage.removeItem("easm_token");
     localStorage.removeItem("easm_role");
     localStorage.removeItem("easm_username");
+    clearMfaChallenge();
   }
 
   function isSessionExpired() {
@@ -105,6 +131,22 @@ export const useAuthStore = defineStore("auth", () => {
     clearSession();
   }
 
+  function setMfaChallenge(challengeId: string, nextUsername: string, maskedEmail: string, expiresInSeconds: number) {
+    const value = {
+      challengeId,
+      username: nextUsername,
+      maskedEmail,
+      expiresAt: Date.now() + expiresInSeconds * 1000,
+    };
+    mfaChallenge.value = value;
+    sessionStorage.setItem("easm_mfa_challenge", JSON.stringify(value));
+  }
+
+  function clearMfaChallenge() {
+    mfaChallenge.value = null;
+    sessionStorage.removeItem("easm_mfa_challenge");
+  }
+
   hydrateSessionFromStorage();
 
   return {
@@ -112,10 +154,14 @@ export const useAuthStore = defineStore("auth", () => {
     role,
     username,
     expiresAt,
+    mfaChallenge,
     isAuthenticated,
     isAdmin,
+    hasPendingMfaChallenge,
     hydrateSessionFromStorage,
     setSession,
+    setMfaChallenge,
+    clearMfaChallenge,
     clearSession,
     isSessionExpired,
     logout,

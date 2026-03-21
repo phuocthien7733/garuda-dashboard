@@ -110,7 +110,7 @@ async def get_exposed_tech_stack(_: CurrentUser = Depends(require_role("admin", 
             }
         },
         {"$sort": {"host_count": -1, "name": 1}},
-        {"$limit": 20},
+        {"$limit": 40},
     ]
 
-    return await db.vulnerabilities.aggregate(pipeline).to_list(length=20)
+    return await db.vulnerabilities.aggregate(pipeline).to_list(length=40)

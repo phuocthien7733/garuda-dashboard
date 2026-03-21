@@ -21,6 +21,8 @@ type VulnerabilityRecord = {
   host?: string | null;
   port?: string | number | null;
   status?: string | null;
+  first_seen?: string | null;
+  last_seen?: string | null;
   request?: string | null;
   response?: string | null;
   "curl-command"?: string | null;
@@ -39,7 +41,7 @@ type TriagePayload = {
   override_severity?: string;
 };
 
-const PAGE_SIZE = 20;
+const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 const SEVERITY_FILTERS = ["all", "critical", "high", "medium", "low", "info"] as const;
 const STATUS_OPTIONS = ["Open", "Investigating", "Accepted Risk", "Resolved"];
 const SEVERITY_OPTIONS = ["critical", "high", "medium", "low", "info"];
@@ -67,6 +69,7 @@ const searchQuery = ref("");
 const severityFilter = ref<(typeof SEVERITY_FILTERS)[number]>("all");
 const portFilter = ref("all");
 const currentPage = ref(1);
+const pageSize = ref<(typeof PAGE_SIZE_OPTIONS)[number]>(20);
 const selectedFingerprints = ref<string[]>([]);
 const singleStatus = ref("");
 const singleSeverity = ref("");
@@ -170,10 +173,10 @@ const filteredVulnerabilities = computed(() => {
 });
 
 const totalFiltered = computed(() => filteredVulnerabilities.value.length);
-const pageCount = computed(() => Math.max(1, Math.ceil(totalFiltered.value / PAGE_SIZE)));
+const pageCount = computed(() => Math.max(1, Math.ceil(totalFiltered.value / pageSize.value)));
 const paginatedVulnerabilities = computed(() => {
-  const startIndex = (currentPage.value - 1) * PAGE_SIZE;
-  return filteredVulnerabilities.value.slice(startIndex, startIndex + PAGE_SIZE);
+  const startIndex = (currentPage.value - 1) * pageSize.value;
+  return filteredVulnerabilities.value.slice(startIndex, startIndex + pageSize.value);
 });
 const selectedCount = computed(() => selectedFingerprints.value.length);
 const selectablePageFingerprints = computed(() =>
@@ -294,6 +297,28 @@ function effectiveStatus(vulnerability: VulnerabilityRecord) {
   return String(vulnerability.status || "Open");
 }
 
+function statusClasses(value: unknown) {
+  const normalized = String(value ?? "").toLowerCase();
+
+  if (normalized === "open") {
+    return "border border-[#ff0308]/40 bg-gradient-to-r from-[#ff0308]/18 via-[#f36d14]/18 to-[#ff0308]/12 text-[#ffd3d4] shadow-[0_0_20px_rgba(255,3,8,0.18)]";
+  }
+
+  if (normalized === "investigating") {
+    return "border border-[#f36d14]/30 bg-[#f36d14]/10 text-[#ffbf92]";
+  }
+
+  if (normalized === "accepted risk") {
+    return "border border-[#ffe240]/25 bg-[#ffe240]/10 text-[#fff2a3]";
+  }
+
+  if (normalized === "resolved") {
+    return "border border-[#389e0d]/25 bg-[#389e0d]/10 text-[#9fe07d]";
+  }
+
+  return "border border-white/10 bg-white/[0.04] text-slate-300";
+}
+
 function rowFingerprint(vulnerability: VulnerabilityRecord) {
   return String(vulnerability.fingerprint ?? "");
 }
@@ -336,8 +361,8 @@ async function fetchAssetData() {
 
   try {
     const [{ data: assetData }, { data: vulnerabilityData }] = await Promise.all([
-      api.get<AssetDetailResponse>(`/api/assets/${encodeURIComponent(assetId.value)}/detail`),
-      api.get<AssetVulnerabilitiesResponse>(`/api/assets/${encodeURIComponent(assetId.value)}/vulnerabilities`),
+      api.get<AssetDetailResponse>(`/assets/${encodeURIComponent(assetId.value)}/detail`),
+      api.get<AssetVulnerabilitiesResponse>(`/assets/${encodeURIComponent(assetId.value)}/vulnerabilities`),
     ]);
 
     asset.value = assetData.asset;
@@ -462,7 +487,7 @@ async function applySingleAction() {
 
   triageSubmitting.value = true;
   try {
-    await api.patch(`/api/vulns/${encodeURIComponent(fingerprint)}`, payload);
+    await api.patch(`/vulns/${encodeURIComponent(fingerprint)}`, payload);
     closeActionModal();
     await fetchAssetData();
   } catch (error) {
@@ -489,7 +514,7 @@ async function applyBulkAction() {
 
   bulkSubmitting.value = true;
   try {
-    await api.post("/api/vulns/bulk-triage", payload);
+    await api.post("/vulns/bulk-triage", payload);
     selectedFingerprints.value = [];
     bulkStatus.value = "";
     bulkSeverity.value = "";
@@ -529,7 +554,7 @@ watch(
   },
 );
 
-watch([searchQuery, severityFilter, portFilter], () => {
+watch([searchQuery, severityFilter, portFilter, pageSize], () => {
   currentPage.value = 1;
 });
 
@@ -560,12 +585,6 @@ onBeforeUnmount(() => {
       >
         Back to inventory
       </button>
-      <span class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-medium text-slate-300">
-        {{ authStore.username }}
-      </span>
-      <span class="rounded-full border border-orange-400/30 bg-orange-400/10 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.18em] text-orange-200">
-        {{ authStore.role }}
-      </span>
     </template>
 
     <section v-if="!assetId" class="mt-4 rounded-[1.6rem] border border-dashed border-white/10 bg-slate-900/55 px-6 py-12 text-center text-sm text-slate-400">
@@ -781,6 +800,8 @@ onBeforeUnmount(() => {
                 <th class="px-3 py-3">IP</th>
                 <th class="px-3 py-3">Host</th>
                 <th class="px-3 py-3">Port</th>
+                <th class="px-3 py-3">First Seen</th>
+                <th class="px-3 py-3">Last Seen</th>
                 <th class="px-3 py-3">Status</th>
                 <th class="px-3 py-3 text-right">Controls</th>
               </tr>
@@ -815,20 +836,15 @@ onBeforeUnmount(() => {
                 <td class="px-3 py-4 text-slate-300">{{ vulnerability.ip || '--' }}</td>
                 <td class="px-3 py-4 text-slate-300">{{ vulnerability.host || '--' }}</td>
                 <td class="px-3 py-4 text-slate-300">{{ vulnerability.port || '--' }}</td>
+                <td class="px-3 py-4 text-slate-300">{{ formatDate(vulnerability.first_seen) }}</td>
+                <td class="px-3 py-4 text-slate-300">{{ formatDate(vulnerability.last_seen) }}</td>
                 <td class="px-3 py-4">
-                  <span class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs font-semibold text-slate-300">
+                  <span class="rounded-full px-3 py-1 text-xs font-semibold" :class="statusClasses(effectiveStatus(vulnerability))">
                     {{ effectiveStatus(vulnerability) }}
                   </span>
                 </td>
                 <td class="px-3 py-4 text-right" @click.stop>
                   <div class="flex justify-end gap-2">
-                    <button
-                      type="button"
-                      class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-100 transition hover:border-white/20 hover:bg-white/[0.08]"
-                      @click="openVulnerabilityDetail(vulnerability)"
-                    >
-                      View detail
-                    </button>
                     <button
                       v-if="isAdmin"
                       type="button"
@@ -847,9 +863,17 @@ onBeforeUnmount(() => {
 
         <div v-if="paginatedVulnerabilities.length > 0" class="mt-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <p class="text-sm text-slate-400">
-            Showing {{ (currentPage - 1) * PAGE_SIZE + 1 }} - {{ Math.min(currentPage * PAGE_SIZE, totalFiltered) }} of {{ totalFiltered }} vulnerabilities.
+            Showing {{ (currentPage - 1) * pageSize + 1 }} - {{ Math.min(currentPage * pageSize, totalFiltered) }} of {{ totalFiltered }} vulnerabilities.
           </p>
-          <div class="flex items-center gap-2">
+          <div class="flex flex-wrap items-center gap-2">
+            <label class="flex items-center gap-2 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-300">
+              <span>Rows</span>
+              <select v-model="pageSize" class="bg-transparent text-xs font-semibold text-white outline-none">
+                <option v-for="size in PAGE_SIZE_OPTIONS" :key="size" :value="size" class="bg-slate-950">
+                  {{ size }}
+                </option>
+              </select>
+            </label>
             <button
               type="button"
               class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-white/20 hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
@@ -888,7 +912,7 @@ onBeforeUnmount(() => {
               <span class="inline-flex rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.22em]" :class="severityClasses(effectiveSeverity(selectedVulnerability))">
                 {{ effectiveSeverity(selectedVulnerability) }}
               </span>
-              <span class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs font-semibold text-slate-300">
+              <span class="rounded-full px-3 py-1 text-xs font-semibold" :class="statusClasses(effectiveStatus(selectedVulnerability))">
                 {{ effectiveStatus(selectedVulnerability) }}
               </span>
               <span class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-slate-400">

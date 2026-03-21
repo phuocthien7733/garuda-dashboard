@@ -26,6 +26,15 @@ services:
     environment:
       - MONGO_URI=mongodb://easm_app_user:SuperSecretPassword123!@mongodb:27017/easm_db?authSource=easm_db
       - JWT_SECRET=ThienVuongDoMenh_BiMatTuyeDoi_2026!@#
+      - SMTP_HOST=smtp.gmail.com
+      - SMTP_PORT=587
+      - SMTP_USERNAME=your-gmail@gmail.com
+      - SMTP_PASSWORD=your-google-app-password
+      - SMTP_FROM_EMAIL=your-gmail@gmail.com
+      - SMTP_FROM_NAME=Test And Watch Security
+      - SMTP_USE_TLS=true
+      - MFA_CODE_EXPIRATION_MINUTES=10
+      - MFA_CODE_LENGTH=6
     ports:
       - "8000:8000"
     depends_on:
@@ -43,7 +52,8 @@ services:
       - ./frontend:/app
       - /app/node_modules
     environment:
-      - VITE_API_BASE_URL=http://localhost:8000
+      - VITE_API_BASE_URL=/api
+      - VITE_DEV_PROXY_TARGET=http://backend:8000
       # Quan trọng cho Windows: Ép Vite dùng Polling để nhận diện file thay đổi
       - CHOKIDAR_USEPOLLING=true 
       - WATCHPACK_POLLING=true
@@ -58,6 +68,7 @@ services:
       dockerfile: Dockerfile.dev
     container_name: easm_worker
     restart: unless-stopped
+    user: "${UID:-1000}:${GID:-1000}"
     volumes:
       - ./worker:/app
       - ./worker/data:/app/data

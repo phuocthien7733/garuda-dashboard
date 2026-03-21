@@ -7,5 +7,5 @@ COPY requirements.txt .
 # Cài đặt thư viện
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Mở cổng và chạy Hot-reload với Uvicorn
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+# Chạy backend ổn định trong container dev để tránh rớt kết nối dashboard khi reloader khởi động lại tiến trình.
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]

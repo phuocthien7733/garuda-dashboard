@@ -352,7 +352,7 @@ async function loadNetwork() {
   let payload: NetworkResponse | null = null;
 
   try {
-    const { data } = await api.get<NetworkResponse>(`/api/assets/${encodeURIComponent(props.assetId)}/network`);
+    const { data } = await api.get<NetworkResponse>(`/assets/${encodeURIComponent(props.assetId)}/network`);
     payload = data;
   } catch (error: any) {
     console.error(error);

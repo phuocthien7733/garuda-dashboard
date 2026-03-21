@@ -26,10 +26,17 @@ async def create_user(
     if existing_user:
         raise HTTPException(status_code=409, detail="Username already exists.")
 
+    normalized_email = payload.email.strip().lower()
+    existing_email = await db.users.find_one({"email": normalized_email})
+    if existing_email:
+        raise HTTPException(status_code=409, detail="Email already exists.")
+
     document = {
         "username": payload.username,
+        "email": normalized_email,
         "password_hash": hash_password(payload.password),
         "role": normalized_role,
+        "mfa_enabled": bool(payload.mfa_enabled),
         "created_at": datetime.now(timezone.utc),
     }
     await db.users.insert_one(document)

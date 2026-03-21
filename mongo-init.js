@@ -18,15 +18,19 @@ db.users.insertMany([
     {
         _id: "admin_001",
         username: "administrator",
+        email: "administrator@testandwatch.local",
         password_hash: "$2b$12$/kJZyc05qjt/xqnu/p6JTu1pFF3GsBNyVi6sHMpXKndWIWZW8NODO", 
         role: "admin",
+        mfa_enabled: false,
         created_at: new Date()
     },
     {
         _id: "admin_002",
         username: "phuocthien7733",
+        email: "phuocthien7733@testandwatch.local",
         password_hash: "$2b$12$MCNt/JElWSjVs7KVXXlKF.WcSLsMDAZf0r7z6Qyrr6BkVnitSsWti", 
         role: "admin",
+        mfa_enabled: false,
         created_at: new Date()
     }
 ]);

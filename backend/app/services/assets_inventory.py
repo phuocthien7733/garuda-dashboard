@@ -1,6 +1,7 @@
 from datetime import datetime, timezone
 
 from motor.motor_asyncio import AsyncIOMotorDatabase
+from app.utils.host_classification import classify_host_type
 
 SEVERITY_RANK = {
     "critical": 5,
@@ -54,7 +55,7 @@ async def recalculate_asset(db: AsyncIOMotorDatabase, host: str) -> None:
                     "template_ids": template_ids,
                     "last_seen": last_seen,
                     "vulnerability_count": len(vulnerabilities),
-                    "type": "subdomain",
+                    "type": classify_host_type(host),
                 },
                 "$setOnInsert": {
                     "first_seen": last_seen,

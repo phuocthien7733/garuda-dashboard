@@ -1,0 +1,1 @@
+"""Nuclei scanner ingestion adapter."""

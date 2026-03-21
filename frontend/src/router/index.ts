@@ -1,10 +1,14 @@
 import { createRouter, createWebHistory } from "vue-router";
 
 import { useAuthStore } from "@/stores/auth";
+import AssetInventoryView from "@/views/AssetInventoryView.vue";
 import AssetProfileView from "@/views/AssetProfileView.vue";
 import DashboardView from "@/views/DashboardView.vue";
 import LoginView from "@/views/LoginView.vue";
+import MfaVerifyView from "@/views/MfaVerifyView.vue";
+import UserProfileView from "@/views/UserProfileView.vue";
 import UsersView from "@/views/UsersView.vue";
+import VulnerabilityInventoryView from "@/views/VulnerabilityInventoryView.vue";
 
 const router = createRouter({
   history: createWebHistory(),
@@ -16,6 +20,12 @@ const router = createRouter({
       meta: { public: true },
     },
     {
+      path: "/mfa-verify",
+      name: "mfa-verify",
+      component: MfaVerifyView,
+      meta: { public: true },
+    },
+    {
       path: "/",
       name: "dashboard",
       component: DashboardView,
@@ -23,12 +33,22 @@ const router = createRouter({
     {
       path: "/assets",
       name: "assets",
-      component: AssetProfileView,
+      component: AssetInventoryView,
     },
     {
       path: "/assets/:id",
       name: "asset-profile",
       component: AssetProfileView,
+    },
+    {
+      path: "/vulnerabilities",
+      name: "vulnerabilities",
+      component: VulnerabilityInventoryView,
+    },
+    {
+      path: "/profile",
+      name: "profile",
+      component: UserProfileView,
     },
     {
       path: "/users",
@@ -46,6 +66,9 @@ router.beforeEach((to) => {
   if (to.meta.public) {
     if (to.name === "login" && authStore.isAuthenticated) {
       return { name: "dashboard" };
+    }
+    if (to.name === "mfa-verify" && !authStore.hasPendingMfaChallenge) {
+      return { name: "login" };
     }
     return true;
   }

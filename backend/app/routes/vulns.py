@@ -34,6 +34,7 @@ async def list_vulnerabilities(
     severity: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
     search: str | None = Query(default=None),
+    limit: int = Query(default=5000, ge=1, le=20000),
     _: CurrentUser = Depends(require_role("admin", "viewer")),
 ):
     db = get_database()
@@ -49,7 +50,7 @@ async def list_vulnerabilities(
             {"template-id": {"$regex": search, "$options": "i"}},
         ]
 
-    cursor = db.vulnerabilities.find(query).sort("last_seen", DESCENDING).limit(200)
+    cursor = db.vulnerabilities.find(query).sort("last_seen", DESCENDING).limit(limit)
     items = [_serialize_vulnerability(document) async for document in cursor]
     return VulnerabilityListResponse(items=items, total=len(items))
 

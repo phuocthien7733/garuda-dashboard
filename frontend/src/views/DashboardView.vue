@@ -115,6 +115,7 @@ let resizeTimer: number | undefined;
 let severityChart: echarts.ECharts | null = null;
 let trendChart: echarts.ECharts | null = null;
 let techStackChart: echarts.ECharts | null = null;
+let chartResizeObserver: ResizeObserver | null = null;
 
 function scheduleChartResize() {
   if (resizeTimer) {
@@ -236,6 +237,26 @@ function renderSeverityChart() {
             },
           ],
   });
+
+  severityChart.off("click");
+  severityChart.on("click", (params) => {
+    const severityName = String(params.name ?? "").toLowerCase();
+    const supportedSeverities = new Set(["critical", "high", "medium", "low", "info"]);
+
+    if (!supportedSeverities.has(severityName) || Number(params.value ?? 0) <= 0) {
+      return;
+    }
+
+    const target = router.resolve({
+      name: "vulnerabilities",
+      query: {
+        severity: severityName,
+        status: "Open",
+      },
+    });
+
+    window.open(target.href, "_blank", "noopener,noreferrer");
+  });
 }
 
 function renderTrendChart() {
@@ -276,7 +297,7 @@ function renderTrendChart() {
     xAxis: {
       type: "category",
       boundaryGap: false,
-      data: trendData.value.labels.map((label) => label.slice(5)),
+      data: trendData.value.labels,
       axisLine: {
         lineStyle: {
           color: "rgba(148, 163, 184, 0.22)",
@@ -285,6 +306,12 @@ function renderTrendChart() {
       axisLabel: {
         color: "#94a3b8",
         fontSize: 11,
+        formatter: (value: string) => {
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+            return value;
+          }
+          return `${value.slice(8, 10)}-${value.slice(5, 7)}`;
+        },
       },
     },
     yAxis: {
@@ -305,7 +332,9 @@ function renderTrendChart() {
         name: "Critical",
         type: "line",
         smooth: true,
-        showSymbol: false,
+        showSymbol: true,
+        symbol: "circle",
+        symbolSize: 8,
         color: severityPalette.critical,
         itemStyle: {
           color: severityPalette.critical,
@@ -323,7 +352,9 @@ function renderTrendChart() {
         name: "High",
         type: "line",
         smooth: true,
-        showSymbol: false,
+        showSymbol: true,
+        symbol: "circle",
+        symbolSize: 8,
         color: severityPalette.high,
         itemStyle: {
           color: severityPalette.high,
@@ -341,7 +372,9 @@ function renderTrendChart() {
         name: "Medium",
         type: "line",
         smooth: true,
-        showSymbol: false,
+        showSymbol: true,
+        symbol: "circle",
+        symbolSize: 8,
         color: severityPalette.medium,
         itemStyle: {
           color: severityPalette.medium,
@@ -359,7 +392,9 @@ function renderTrendChart() {
         name: "Low",
         type: "line",
         smooth: true,
-        showSymbol: false,
+        showSymbol: true,
+        symbol: "circle",
+        symbolSize: 7,
         color: severityPalette.low,
         itemStyle: {
           color: severityPalette.low,
@@ -377,7 +412,9 @@ function renderTrendChart() {
         name: "Info",
         type: "line",
         smooth: true,
-        showSymbol: false,
+        showSymbol: true,
+        symbol: "circle",
+        symbolSize: 7,
         color: severityPalette.info,
         itemStyle: {
           color: severityPalette.info,
@@ -392,6 +429,36 @@ function renderTrendChart() {
         data: trendData.value.series.info,
       },
     ],
+  });
+
+  trendChart.off("click");
+  trendChart.on("click", (params) => {
+    if (params.componentType !== "series") {
+      return;
+    }
+
+    const dateLabel = String(params.name ?? "");
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateLabel)) {
+      return;
+    }
+
+    const severityName = String(params.seriesName ?? "").toLowerCase();
+    const supportedSeverities = new Set(["critical", "high", "medium", "low", "info"]);
+    if (!supportedSeverities.has(severityName)) {
+      return;
+    }
+
+    const target = router.resolve({
+      name: "vulnerabilities",
+      query: {
+        severity: severityName,
+        timeField: "first_seen",
+        dateFrom: dateLabel,
+        dateTo: dateLabel,
+      },
+    });
+
+    window.open(target.href, "_blank", "noopener,noreferrer");
   });
 }
 
@@ -455,6 +522,10 @@ function renderTechStackChart() {
         type: "treemap",
         roam: false,
         nodeClick: false,
+        left: 2,
+        right: 2,
+        top: 2,
+        bottom: 2,
         breadcrumb: {
           show: false,
         },
@@ -463,15 +534,15 @@ function renderTechStackChart() {
           formatter: "{b}\n{c}",
           color: "#ffffff",
           fontWeight: 700,
-          fontSize: 12,
+          fontSize: 11,
         },
         upperLabel: {
           show: false,
         },
         itemStyle: {
           borderColor: "rgba(15, 23, 42, 0.95)",
-          borderWidth: 3,
-          gapWidth: 3,
+          borderWidth: 2,
+          gapWidth: 2,
         },
         data: treemapData,
       },
@@ -494,11 +565,32 @@ function renderTechStackChart() {
           ]
         : [],
   });
+
+  techStackChart.off("click");
+  techStackChart.on("click", (params) => {
+    if (params.componentType !== "series") {
+      return;
+    }
+
+    const techName = String(params.name ?? "").trim();
+    if (!techName) {
+      return;
+    }
+
+    const target = router.resolve({
+      name: "vulnerabilities",
+      query: {
+        search: techName,
+      },
+    });
+
+    window.open(target.href, "_blank", "noopener,noreferrer");
+  });
 }
 
 async function loadTopAssets() {
   try {
-    const { data } = await api.get("/api/assets/top", {
+    const { data } = await api.get("/assets/top", {
       params: {
         severity: selectedAssetSeverity.value,
       },
@@ -511,7 +603,7 @@ async function loadTopAssets() {
 
 async function loadTrendData() {
   try {
-    const { data } = await api.get("/api/stats/trend", {
+    const { data } = await api.get("/stats/trend", {
       params: {
         days: 7,
       },
@@ -526,7 +618,7 @@ async function loadTrendData() {
 
 async function loadTechStack() {
   try {
-    const { data } = await api.get("/api/stats/tech-stack");
+    const { data } = await api.get("/stats/tech-stack");
     techStackData.value = data;
     await nextTick();
     renderTechStackChart();
@@ -537,7 +629,7 @@ async function loadTechStack() {
 
 async function loadStats() {
   try {
-    const { data } = await api.get("/api/stats");
+    const { data } = await api.get("/stats");
     stats.value = data;
     await nextTick();
     renderSeverityChart();
@@ -563,7 +655,7 @@ async function navigateTo(item: MenuItem) {
 
 async function logout() {
   try {
-    await api.post("/api/auth/logout");
+    await api.post("/auth/logout");
   } catch (error) {
     console.error(error);
   } finally {
@@ -576,7 +668,13 @@ async function openAssetDetail(asset: TopAssetItem) {
   if (!asset.id) {
     return;
   }
-  await router.push({ name: "asset-profile", params: { id: asset.id } });
+
+  const target = router.resolve({
+    name: "asset-profile",
+    params: { id: asset.id },
+  });
+
+  window.open(target.href, "_blank", "noopener,noreferrer");
 }
 
 onMounted(() => {
@@ -589,6 +687,14 @@ onMounted(() => {
   window.addEventListener("resize", renderTrendChart);
   window.addEventListener("resize", renderTechStackChart);
   window.addEventListener("easm-sidebar-change", handleShellResize);
+
+  chartResizeObserver = new ResizeObserver(() => {
+    scheduleChartResize();
+  });
+
+  [chartElement.value, trendChartElement.value, techStackChartElement.value]
+    .filter((element): element is HTMLDivElement => Boolean(element))
+    .forEach((element) => chartResizeObserver?.observe(element));
 });
 
 onBeforeUnmount(() => {
@@ -602,6 +708,8 @@ onBeforeUnmount(() => {
   window.removeEventListener("resize", renderTrendChart);
   window.removeEventListener("resize", renderTechStackChart);
   window.removeEventListener("easm-sidebar-change", handleShellResize);
+  chartResizeObserver?.disconnect();
+  chartResizeObserver = null;
   severityChart?.dispose();
   trendChart?.dispose();
   techStackChart?.dispose();
@@ -720,7 +828,7 @@ watch(selectedAssetSeverity, () => {
         </section>
 
         <section class="mt-4 grid gap-4 xl:grid-cols-2">
-          <div class="min-h-[22rem] rounded-[1.75rem] border border-white/10 bg-slate-900/60 p-5 backdrop-blur">
+          <div class="min-h-[23rem] rounded-[1.75rem] border border-white/10 bg-slate-900/60 p-5 backdrop-blur">
             <div class="flex items-center justify-between gap-4">
               <div>
                 <h2 class="text-xl font-semibold text-white">Attack Surface Trend</h2>
@@ -728,12 +836,12 @@ watch(selectedAssetSeverity, () => {
               </div>
             </div>
 
-            <div class="mt-5 h-[16rem] rounded-[1.4rem] border border-white/10 bg-slate-950/55 p-3">
+            <div class="mt-4 h-[18.5rem] rounded-[1.4rem] border border-white/10 bg-slate-950/55 p-2">
               <div ref="trendChartElement" class="h-full w-full" />
             </div>
           </div>
 
-          <div class="min-h-[22rem] rounded-[1.75rem] border border-white/10 bg-slate-900/60 p-5 backdrop-blur">
+          <div class="min-h-[24.5rem] rounded-[1.75rem] border border-white/10 bg-slate-900/60 p-4 backdrop-blur">
             <div class="flex items-center justify-between gap-4">
               <div>
                 <h2 class="text-xl font-semibold text-white">Exposed Tech Stack</h2>
@@ -741,7 +849,7 @@ watch(selectedAssetSeverity, () => {
               </div>
             </div>
 
-            <div class="mt-5 h-[16rem] rounded-[1.4rem] border border-white/10 bg-slate-950/55 p-2">
+            <div class="mt-3 h-[20.5rem] rounded-[1.4rem] border border-white/10 bg-slate-950/55 p-0.5">
               <div ref="techStackChartElement" class="h-full w-full" />
             </div>
           </div>

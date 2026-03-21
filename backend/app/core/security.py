@@ -1,3 +1,6 @@
+import hashlib
+import hmac
+import secrets
 from datetime import datetime, timedelta, timezone
 from uuid import uuid4
 
@@ -28,3 +31,19 @@ def create_access_token(subject: str, role: str) -> str:
         "jti": uuid4().hex,
     }
     return jwt.encode(payload, settings.jwt_secret, algorithm=settings.jwt_algorithm)
+
+
+def generate_mfa_code(length: int | None = None) -> str:
+    settings = get_settings()
+    code_length = length or settings.mfa_code_length
+    return "".join(secrets.choice("0123456789") for _ in range(code_length))
+
+
+def hash_mfa_code(challenge_id: str, code: str) -> str:
+    settings = get_settings()
+    payload = f"{settings.jwt_secret}:{challenge_id}:{code}".encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def verify_mfa_code(challenge_id: str, code: str, expected_hash: str) -> bool:
+    return hmac.compare_digest(hash_mfa_code(challenge_id, code), expected_hash)

@@ -9,8 +9,7 @@ from watchdog.observers.polling import PollingObserver
 
 from app.config import get_settings
 from app.db import close_database, ensure_indexes
-from app.parser import detect_input_format
-from app.processor import process_file
+from app.scanners import get_scanner_folders, get_scanner_for_file
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,12 +38,14 @@ def _wait_until_file_ready(file_path: Path, retries: int = 10, delay_seconds: fl
 
 
 def _build_archive_path(file_path: Path) -> Path:
-    candidate = archive_dir / file_path.name
+    relative_path = file_path.relative_to(incoming_dir)
+    candidate = archive_dir / relative_path
+    candidate.parent.mkdir(parents=True, exist_ok=True)
     if not candidate.exists():
         return candidate
 
     timestamp = int(time.time())
-    return archive_dir / f"{file_path.stem}_{timestamp}{file_path.suffix}"
+    return candidate.with_name(f"{candidate.stem}_{timestamp}{candidate.suffix}")
 
 
 def _schedule_file_processing(file_path: Path) -> None:
@@ -77,15 +78,20 @@ async def handle_file(file_path: Path) -> None:
             logger.warning("Skipping %s because the file was not ready in time", file_path.name)
             return
 
-        logger.info("Processing %s as %s", file_path.name, detect_input_format(file_path))
-        summary = await process_file(file_path)
-        archive_dir.mkdir(parents=True, exist_ok=True)
+        scanner = get_scanner_for_file(file_path, incoming_dir)
+        logger.info(
+            "Processing %s via %s as %s",
+            file_path.relative_to(incoming_dir),
+            scanner.name,
+            scanner.detect_input_format(file_path),
+        )
+        summary = await scanner.process_file(file_path)
         target_path = _build_archive_path(file_path)
         shutil.move(str(file_path), target_path)
         logger.info(
             "Archived %s to %s | processed=%s inserted=%s updated=%s skipped=%s resolved=%s assets=%s",
-            file_path.name,
-            target_path.name,
+            file_path.relative_to(incoming_dir),
+            target_path.relative_to(archive_dir),
             summary.processed,
             summary.inserted,
             summary.updated,
@@ -100,21 +106,24 @@ async def handle_file(file_path: Path) -> None:
 
 
 async def process_existing_files() -> None:
-    for file_path in sorted(incoming_dir.glob("*.json")):
+    for file_path in sorted(incoming_dir.rglob("*.json")):
         await handle_file(file_path)
 
 
 async def main_async() -> None:
     incoming_dir.mkdir(parents=True, exist_ok=True)
     archive_dir.mkdir(parents=True, exist_ok=True)
+    for scanner_folder in get_scanner_folders():
+        (incoming_dir / scanner_folder).mkdir(parents=True, exist_ok=True)
+        (archive_dir / scanner_folder).mkdir(parents=True, exist_ok=True)
     logger.info("Worker bootstrap ready | incoming=%s archive=%s", incoming_dir, archive_dir)
     await ensure_indexes()
     await process_existing_files()
 
     observer = PollingObserver(timeout=1)
-    observer.schedule(IncomingFileHandler(), str(incoming_dir), recursive=False)
+    observer.schedule(IncomingFileHandler(), str(incoming_dir), recursive=True)
     observer.start()
-    logger.info("Watching %s for new JSON files", incoming_dir)
+    logger.info("Watching %s for new JSON files in scanner folders: %s", incoming_dir, ", ".join(get_scanner_folders()))
 
     try:
         while True:

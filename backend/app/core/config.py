@@ -10,6 +10,15 @@ class Settings(BaseSettings):
     jwt_secret: str = "change-me"
     jwt_algorithm: str = "HS256"
     jwt_expiration_hours: int = 18
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_username: str = ""
+    smtp_password: str = ""
+    smtp_from_email: str = ""
+    smtp_from_name: str = "Test And Watch Security"
+    smtp_use_tls: bool = True
+    mfa_code_expiration_minutes: int = 10
+    mfa_code_length: int = 6
 
     model_config = SettingsConfigDict(
         env_file=".env",
