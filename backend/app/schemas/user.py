@@ -25,7 +25,7 @@ class UserUpdate(BaseModel):
 
 class UserResponse(BaseModel):
     username: str
-    email: EmailStr | None = None
+    email: str | None = None
     role: str
     mfa_enabled: bool = False
     created_at: datetime | None = None

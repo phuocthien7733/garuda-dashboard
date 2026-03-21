@@ -13,7 +13,7 @@ class LoginResponse(BaseModel):
     token_type: str = "bearer"
     username: str
     role: str | None = None
-    email: EmailStr | None = None
+    email: str | None = None
     expires_in_hours: int | None = 18
     mfa_required: bool = False
     challenge_id: str | None = None
@@ -26,7 +26,7 @@ class TokenResponse(BaseModel):
     token_type: str = "bearer"
     username: str
     role: str
-    email: EmailStr | None = None
+    email: str | None = None
     expires_in_hours: int = 18
 
 
@@ -39,7 +39,7 @@ class CurrentUser(BaseModel):
 
 class SessionResponse(BaseModel):
     username: str
-    email: EmailStr | None = None
+    email: str | None = None
     role: str
     created_at: datetime | None = None
     mfa_enabled: bool = False
