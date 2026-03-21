@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onMounted, reactive, ref } from "vue";
 import { useRouter } from "vue-router";
 
 import api from "@/services/api";
@@ -30,11 +30,13 @@ const loading = ref(false);
 const resending = ref(false);
 const errorMessage = ref("");
 const successMessage = ref("");
+const nowTick = ref(Date.now());
+let countdownInterval: number | null = null;
 
 const challenge = computed(() => authStore.mfaChallenge);
 const challengeExpiresLabel = computed(() => {
   const expiresAt = challenge.value?.expiresAt ?? 0;
-  const remainingMs = Math.max(expiresAt - Date.now(), 0);
+  const remainingMs = Math.max(expiresAt - nowTick.value, 0);
   const totalSeconds = Math.floor(remainingMs / 1000);
   const minutes = Math.floor(totalSeconds / 60);
   const seconds = totalSeconds % 60;
@@ -95,6 +97,18 @@ async function resendCode() {
     resending.value = false;
   }
 }
+
+onMounted(() => {
+  countdownInterval = window.setInterval(() => {
+    nowTick.value = Date.now();
+  }, 1000);
+});
+
+onBeforeUnmount(() => {
+  if (countdownInterval !== null) {
+    window.clearInterval(countdownInterval);
+  }
+});
 </script>
 
 <template>

@@ -26,6 +26,7 @@ const loading = ref(true);
 const saving = ref(false);
 const errorMessage = ref("");
 const successMessage = ref("");
+const initialMfaEnabled = ref(false);
 
 const form = reactive({
   username: "",
@@ -72,6 +73,7 @@ async function loadProfile() {
     form.role = data.role;
     form.createdAt = data.created_at ?? "";
     form.mfaEnabled = Boolean(data.mfa_enabled);
+    initialMfaEnabled.value = form.mfaEnabled;
   } catch (error) {
     console.error(error);
     errorMessage.value = "Unable to load your profile information right now.";
@@ -111,6 +113,11 @@ async function saveProfile() {
     }
   }
 
+  if (form.mfaEnabled !== initialMfaEnabled.value && !form.currentPassword) {
+    errorMessage.value = "Current password is required to activate or deactivate MFA.";
+    return;
+  }
+
   saving.value = true;
 
   try {
@@ -127,6 +134,7 @@ async function saveProfile() {
     form.username = data.username;
     form.email = data.email ?? form.email;
     form.role = data.role;
+    initialMfaEnabled.value = form.mfaEnabled;
     form.currentPassword = "";
     form.newPassword = "";
     form.confirmPassword = "";

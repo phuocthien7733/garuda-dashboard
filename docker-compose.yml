@@ -28,10 +28,10 @@ services:
       - JWT_SECRET=ThienVuongDoMenh_BiMatTuyeDoi_2026!@#
       - SMTP_HOST=smtp.gmail.com
       - SMTP_PORT=587
-      - SMTP_USERNAME=your-gmail@gmail.com
-      - SMTP_PASSWORD=your-google-app-password
-      - SMTP_FROM_EMAIL=your-gmail@gmail.com
-      - SMTP_FROM_NAME=Test And Watch Security
+      - SMTP_USERNAME=phuocthien77332711@gmail.com
+      - SMTP_PASSWORD=smuntzvqfotgaixq
+      - SMTP_FROM_EMAIL=phuocthien77332711@gmail.com
+      - SMTP_FROM_NAME=T&W Falcon
       - SMTP_USE_TLS=true
       - MFA_CODE_EXPIRATION_MINUTES=10
       - MFA_CODE_LENGTH=6
