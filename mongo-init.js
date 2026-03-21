@@ -1,11 +1,15 @@
+const dbName = process.env.MONGO_DB_NAME || 'easm_db';
+const appUsername = process.env.MONGO_APP_USERNAME || 'easm_app_user';
+const appPassword = process.env.MONGO_APP_PASSWORD || 'SuperSecretPassword123!';
+
 // Chuyển sang sử dụng database easm_db
-db = db.getSiblingDB('easm_db');
+db = db.getSiblingDB(dbName);
 
 // 1. Tạo User cho FastAPI kết nối ngầm (Không thay đổi)
 db.createUser({
-  user: "easm_app_user",
-  pwd: "SuperSecretPassword123!",
-  roles: [ { role: "readWrite", db: "easm_db" } ]
+  user: appUsername,
+  pwd: appPassword,
+  roles: [ { role: "readWrite", db: dbName } ]
 });
 
 // 2. Dựng sẵn các Collections

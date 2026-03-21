@@ -1,4 +1,5 @@
 from functools import lru_cache
+import json
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -19,12 +20,34 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = True
     mfa_code_expiration_minutes: int = 10
     mfa_code_length: int = 6
+    cors_origins: str = ""
 
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
     )
+
+    @property
+    def parsed_cors_origins(self) -> list[str]:
+        if not self.cors_origins.strip():
+            return [
+                "http://localhost:5173",
+                "http://127.0.0.1:5173",
+                "http://localhost:4173",
+                "http://127.0.0.1:4173",
+            ]
+
+        raw_value = self.cors_origins.strip()
+
+        try:
+            parsed = json.loads(raw_value)
+            if isinstance(parsed, list):
+                return [str(item).strip() for item in parsed if str(item).strip()]
+        except json.JSONDecodeError:
+            pass
+
+        return [item.strip() for item in raw_value.split(",") if item.strip()]
 
 
 @lru_cache
