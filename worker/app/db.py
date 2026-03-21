@@ -4,7 +4,7 @@ from pymongo import ASCENDING
 from app.config import get_settings
 
 settings = get_settings()
-client = AsyncIOMotorClient(settings.mongo_uri)
+client = AsyncIOMotorClient(settings.resolved_mongo_uri)
 database = client[settings.mongo_db_name]
 
 
