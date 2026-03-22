@@ -20,6 +20,8 @@ class AssetResponse(BaseModel):
 class AssetListResponse(BaseModel):
     items: list[AssetResponse]
     total: int
+    next_cursor: str | None = None
+    page_size: int | None = None
 
 
 class AssetDetailResponse(BaseModel):
@@ -31,6 +33,8 @@ class AssetVulnerabilitiesResponse(BaseModel):
     asset_host: str
     items: list[dict[str, Any]]
     total: int
+    next_cursor: str | None = None
+    page_size: int | None = None
 
 
 class AssetBulkTriageRequest(BaseModel):

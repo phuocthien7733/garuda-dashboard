@@ -39,7 +39,11 @@ async def recalculate_asset(db: AsyncIOMotorDatabase, host: str) -> None:
             }
         )
         template_ids = sorted(
-            {document.get("template-id") for document in vulnerabilities if document.get("template-id")}
+            {
+                document.get("template_id") or document.get("template-id")
+                for document in vulnerabilities
+                if document.get("template_id") or document.get("template-id")
+            }
         )
         last_seen_values = [document.get("last_seen") for document in vulnerabilities if document.get("last_seen")]
         last_seen = max(last_seen_values) if last_seen_values else datetime.now(timezone.utc)

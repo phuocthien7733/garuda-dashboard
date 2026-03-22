@@ -2,6 +2,8 @@ from dataclasses import dataclass, field
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.core.canonical import normalize_severity
+
 
 class FindingInfo(BaseModel):
     name: str | None = None
@@ -41,7 +43,7 @@ class IngestedVulnerability(BaseModel):
     model_config = ConfigDict(populate_by_name=True, extra="allow")
 
     def normalized_severity(self) -> str:
-        return self.severity.lower()
+        return normalize_severity(self.severity)
 
 
 @dataclass(slots=True)
@@ -64,6 +66,6 @@ def normalize_finding_payload(payload: dict) -> dict:
         normalized["info"] = info
 
     normalized["name"] = normalized.get("name") or info.get("name")
-    normalized["severity"] = (normalized.get("severity") or info.get("severity") or "unknown").lower()
+    normalized["severity"] = normalize_severity(normalized.get("severity") or info.get("severity"))
 
     return normalized

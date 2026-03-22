@@ -34,6 +34,8 @@ type AssetVulnerabilitiesResponse = {
   asset_host: string;
   items: VulnerabilityRecord[];
   total: number;
+  next_cursor?: string | null;
+  page_size?: number;
 };
 
 type TriagePayload = {
@@ -45,14 +47,6 @@ const PAGE_SIZE_OPTIONS = [20, 50, 100] as const;
 const SEVERITY_FILTERS = ["all", "critical", "high", "medium", "low", "info"] as const;
 const STATUS_OPTIONS = ["Open", "Investigating", "Accepted Risk", "Resolved"];
 const SEVERITY_OPTIONS = ["critical", "high", "medium", "low", "info"];
-const severityRank: Record<string, number> = {
-  critical: 5,
-  high: 4,
-  medium: 3,
-  low: 2,
-  info: 1,
-};
-
 const authStore = useAuthStore();
 const route = useRoute();
 const router = useRouter();
@@ -66,10 +60,14 @@ const selectedVulnerability = ref<VulnerabilityRecord | null>(null);
 const actionVulnerability = ref<VulnerabilityRecord | null>(null);
 const copiedSection = ref<"request" | "response" | "curl" | null>(null);
 const searchQuery = ref("");
+const debouncedSearchQuery = ref("");
 const severityFilter = ref<(typeof SEVERITY_FILTERS)[number]>("all");
 const portFilter = ref("all");
 const currentPage = ref(1);
 const pageSize = ref<(typeof PAGE_SIZE_OPTIONS)[number]>(20);
+const currentCursor = ref<string | null>(null);
+const nextCursor = ref<string | null>(null);
+const cursorHistory = ref<Array<string | null>>([]);
 const selectedFingerprints = ref<string[]>([]);
 const singleStatus = ref("");
 const singleSeverity = ref("");
@@ -77,6 +75,7 @@ const bulkStatus = ref("");
 const bulkSeverity = ref("");
 const triageSubmitting = ref(false);
 const bulkSubmitting = ref(false);
+let searchDebounceTimer: number | undefined;
 
 const assetId = computed(() => (typeof route.params.id === "string" ? route.params.id : ""));
 const isValidAssetId = computed(() => /^[a-f\d]{24}$/i.test(assetId.value));
@@ -123,61 +122,9 @@ const availablePorts = computed(() => {
   });
 });
 
-const filteredVulnerabilities = computed(() => {
-  const query = searchQuery.value.trim().toLowerCase();
-
-  return [...vulnerabilities.value]
-    .filter((vulnerability) => {
-      const severity = effectiveSeverity(vulnerability).toLowerCase();
-      const port = String(vulnerability.port ?? "").trim();
-
-      if (severityFilter.value !== "all" && severity !== severityFilter.value) {
-        return false;
-      }
-
-      if (portFilter.value !== "all" && port !== portFilter.value) {
-        return false;
-      }
-
-      if (!query) {
-        return true;
-      }
-
-      const haystack = [
-        vulnerability.name,
-        vulnerability.host,
-        vulnerability.ip,
-        vulnerability.port,
-        vulnerability["template-id"],
-        vulnerability["matcher-name"],
-      ]
-        .map((item) => String(item ?? "").toLowerCase())
-        .join(" ");
-
-      return haystack.includes(query);
-    })
-    .sort((left, right) => {
-      const severityDelta = (severityRank[effectiveSeverity(right).toLowerCase()] ?? 0) - (severityRank[effectiveSeverity(left).toLowerCase()] ?? 0);
-      if (severityDelta !== 0) {
-        return severityDelta;
-      }
-
-      const leftLastSeen = parseDateValue(left.last_seen);
-      const rightLastSeen = parseDateValue(right.last_seen);
-      if (leftLastSeen !== rightLastSeen) {
-        return rightLastSeen - leftLastSeen;
-      }
-
-      return String(left.name ?? "").localeCompare(String(right.name ?? ""));
-    });
-});
-
-const totalFiltered = computed(() => filteredVulnerabilities.value.length);
+const totalFiltered = computed(() => totalVulnerabilities.value);
 const pageCount = computed(() => Math.max(1, Math.ceil(totalFiltered.value / pageSize.value)));
-const paginatedVulnerabilities = computed(() => {
-  const startIndex = (currentPage.value - 1) * pageSize.value;
-  return filteredVulnerabilities.value.slice(startIndex, startIndex + pageSize.value);
-});
+const paginatedVulnerabilities = computed(() => vulnerabilities.value);
 const selectedCount = computed(() => selectedFingerprints.value.length);
 const selectablePageFingerprints = computed(() =>
   paginatedVulnerabilities.value
@@ -217,15 +164,6 @@ const vulnerabilityDetailEntries = computed(() => {
       value: formatDisplayValue(key, value),
     }));
 });
-
-function parseDateValue(value: unknown) {
-  if (!value) {
-    return 0;
-  }
-
-  const timestamp = new Date(String(value)).getTime();
-  return Number.isNaN(timestamp) ? 0 : timestamp;
-}
 
 function formatDate(value: unknown) {
   if (!value) {
@@ -362,18 +300,28 @@ async function fetchAssetData() {
   try {
     const [{ data: assetData }, { data: vulnerabilityData }] = await Promise.all([
       api.get<AssetDetailResponse>(`/assets/${encodeURIComponent(assetId.value)}/detail`),
-      api.get<AssetVulnerabilitiesResponse>(`/assets/${encodeURIComponent(assetId.value)}/vulnerabilities`),
+      api.get<AssetVulnerabilitiesResponse>(`/assets/${encodeURIComponent(assetId.value)}/vulnerabilities`, {
+        params: {
+          page_size: pageSize.value,
+          cursor: currentCursor.value || undefined,
+          search: debouncedSearchQuery.value.trim() || undefined,
+          severity: severityFilter.value !== "all" ? severityFilter.value : undefined,
+          port: portFilter.value !== "all" ? portFilter.value : undefined,
+        },
+      }),
     ]);
 
     asset.value = assetData.asset;
     vulnerabilities.value = vulnerabilityData.items ?? [];
-    totalVulnerabilities.value = vulnerabilityData.total ?? vulnerabilities.value.length;
+    totalVulnerabilities.value = vulnerabilityData.total ?? 0;
+    nextCursor.value = vulnerabilityData.next_cursor ?? null;
   } catch (error: any) {
     console.error(error);
     errorMessage.value = error?.response?.data?.detail || "Unable to load this asset.";
     asset.value = null;
     vulnerabilities.value = [];
     totalVulnerabilities.value = 0;
+    nextCursor.value = null;
   } finally {
     loading.value = false;
   }
@@ -527,11 +475,23 @@ async function applyBulkAction() {
 }
 
 function goToPreviousPage() {
+  if (currentPage.value <= 1 || cursorHistory.value.length === 0) {
+    return;
+  }
+  const previousCursor = cursorHistory.value.pop() ?? null;
+  currentCursor.value = previousCursor;
   currentPage.value = Math.max(1, currentPage.value - 1);
+  void fetchAssetData();
 }
 
 function goToNextPage() {
+  if (!nextCursor.value || currentPage.value >= pageCount.value) {
+    return;
+  }
+  cursorHistory.value.push(currentCursor.value);
+  currentCursor.value = nextCursor.value;
   currentPage.value = Math.min(pageCount.value, currentPage.value + 1);
+  void fetchAssetData();
 }
 
 function handleEscape(event: KeyboardEvent) {
@@ -550,12 +510,30 @@ function handleEscape(event: KeyboardEvent) {
 watch(
   () => route.fullPath,
   () => {
+    currentCursor.value = null;
+    nextCursor.value = null;
+    cursorHistory.value = [];
+    currentPage.value = 1;
     void fetchAssetData();
   },
 );
 
-watch([searchQuery, severityFilter, portFilter, pageSize], () => {
+watch(searchQuery, (value) => {
+  if (searchDebounceTimer) {
+    window.clearTimeout(searchDebounceTimer);
+  }
+  searchDebounceTimer = window.setTimeout(() => {
+    debouncedSearchQuery.value = value;
+  }, 300);
+});
+
+watch([debouncedSearchQuery, severityFilter, portFilter, pageSize], () => {
+  currentCursor.value = null;
+  nextCursor.value = null;
+  cursorHistory.value = [];
+  selectedFingerprints.value = [];
   currentPage.value = 1;
+  void fetchAssetData();
 });
 
 watch(pageCount, (value) => {
@@ -565,11 +543,15 @@ watch(pageCount, (value) => {
 });
 
 onMounted(() => {
+  debouncedSearchQuery.value = searchQuery.value;
   void fetchAssetData();
   window.addEventListener("keydown", handleEscape);
 });
 
 onBeforeUnmount(() => {
+  if (searchDebounceTimer) {
+    window.clearTimeout(searchDebounceTimer);
+  }
   window.removeEventListener("keydown", handleEscape);
 });
 </script>
@@ -888,7 +870,7 @@ onBeforeUnmount(() => {
             <button
               type="button"
               class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-white/20 hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
-              :disabled="currentPage === pageCount"
+              :disabled="!nextCursor || currentPage === pageCount"
               @click="goToNextPage"
             >
               Next

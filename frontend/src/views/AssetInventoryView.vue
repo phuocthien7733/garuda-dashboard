@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 
 import AppShell from "@/components/layout/AppShell.vue";
@@ -20,6 +20,8 @@ type AssetRecord = {
 type AssetListResponse = {
   items: AssetRecord[];
   total: number;
+  next_cursor?: string | null;
+  page_size?: number;
 };
 
 type DashboardStats = {
@@ -43,6 +45,7 @@ const loading = ref(false);
 const errorMessage = ref("");
 const assets = ref<AssetRecord[]>([]);
 const searchQuery = ref("");
+const debouncedSearchQuery = ref("");
 const severityFilter = ref<(typeof SEVERITY_FILTERS)[number]>("all");
 const portFilter = ref("all");
 const timeField = ref<(typeof TIME_FIELD_OPTIONS)[number]["value"]>("last_seen");
@@ -50,6 +53,10 @@ const dateFrom = ref("");
 const dateTo = ref("");
 const currentPage = ref(1);
 const pageSize = ref<(typeof PAGE_SIZE_OPTIONS)[number]>(20);
+const currentCursor = ref<string | null>(null);
+const nextCursor = ref<string | null>(null);
+const cursorHistory = ref<Array<string | null>>([]);
+let searchDebounceTimer: number | undefined;
 const stats = ref<DashboardStats>({
   assets: 0,
   open_vulnerabilities: 0,
@@ -146,87 +153,10 @@ function severityClasses(value: unknown) {
   return "border border-white/10 bg-white/[0.04] text-slate-300";
 }
 
-function parseDateValue(value: unknown) {
-  if (!value) {
-    return 0;
-  }
-
-  const timestamp = new Date(String(value)).getTime();
-  return Number.isNaN(timestamp) ? 0 : timestamp;
-}
-
-function parseDateBoundary(value: string, boundary: "start" | "end") {
-  if (!value) {
-    return null;
-  }
-
-  const suffix = boundary === "start" ? "T00:00:00" : "T23:59:59.999";
-  const timestamp = new Date(`${value}${suffix}`).getTime();
-  return Number.isNaN(timestamp) ? null : timestamp;
-}
-
-const filteredAssets = computed(() => {
-  const query = searchQuery.value.trim().toLowerCase();
-
-  return [...assets.value]
-    .filter((asset) => {
-      const highestSeverity = String(asset.highest_severity ?? "").toLowerCase();
-
-      if (severityFilter.value !== "all" && highestSeverity !== severityFilter.value) {
-        return false;
-      }
-
-      if (portFilter.value !== "all" && !(asset.open_ports ?? []).map(String).includes(portFilter.value)) {
-        return false;
-      }
-
-      const fieldTimestamp = parseDateValue(asset[timeField.value]);
-      const fromTimestamp = parseDateBoundary(dateFrom.value, "start");
-      const toTimestamp = parseDateBoundary(dateTo.value, "end");
-
-      if (fromTimestamp !== null && (fieldTimestamp === 0 || fieldTimestamp < fromTimestamp)) {
-        return false;
-      }
-
-      if (toTimestamp !== null && (fieldTimestamp === 0 || fieldTimestamp > toTimestamp)) {
-        return false;
-      }
-
-      if (!query) {
-        return true;
-      }
-
-      const haystack = [
-        asset.host,
-        ...(asset.ip_addresses ?? []),
-        ...(asset.open_ports ?? []),
-      ]
-        .map((item) => String(item ?? "").toLowerCase())
-        .join(" ");
-
-      return haystack.includes(query);
-    })
-    .sort((left, right) => {
-      if ((right.vulnerability_count ?? 0) !== (left.vulnerability_count ?? 0)) {
-        return (right.vulnerability_count ?? 0) - (left.vulnerability_count ?? 0);
-      }
-
-      const rightLastSeen = parseDateValue(right.last_seen);
-      const leftLastSeen = parseDateValue(left.last_seen);
-      if (rightLastSeen !== leftLastSeen) {
-        return rightLastSeen - leftLastSeen;
-      }
-
-      return String(left.host ?? "").localeCompare(String(right.host ?? ""));
-    });
-});
-
-const totalFiltered = computed(() => filteredAssets.value.length);
+const totalAssets = ref(0);
+const totalFiltered = computed(() => totalAssets.value);
 const pageCount = computed(() => Math.max(1, Math.ceil(totalFiltered.value / pageSize.value)));
-const paginatedAssets = computed(() => {
-  const startIndex = (currentPage.value - 1) * pageSize.value;
-  return filteredAssets.value.slice(startIndex, startIndex + pageSize.value);
-});
+const paginatedAssets = computed(() => assets.value);
 
 async function fetchAssetInventory() {
   loading.value = true;
@@ -237,7 +167,14 @@ async function fetchAssetInventory() {
       api.get<DashboardStats>("/stats"),
       api.get<AssetListResponse>("/assets", {
         params: {
-          limit: 1000,
+          page_size: pageSize.value,
+          cursor: currentCursor.value || undefined,
+          search: debouncedSearchQuery.value.trim() || undefined,
+          severity: severityFilter.value !== "all" ? severityFilter.value : undefined,
+          port: portFilter.value !== "all" ? portFilter.value : undefined,
+          time_field: timeField.value,
+          date_from: dateFrom.value || undefined,
+          date_to: dateTo.value || undefined,
         },
       }),
     ]);
@@ -250,10 +187,14 @@ async function fetchAssetInventory() {
       medium_vulnerabilities: Number(statsData.medium_vulnerabilities ?? 0),
     };
     assets.value = assetData.items ?? [];
+    totalAssets.value = Number(assetData.total ?? 0);
+    nextCursor.value = assetData.next_cursor ?? null;
   } catch (error: any) {
     console.error(error);
     errorMessage.value = error?.response?.data?.detail || "Unable to load asset inventory.";
     assets.value = [];
+    totalAssets.value = 0;
+    nextCursor.value = null;
   } finally {
     loading.value = false;
   }
@@ -264,15 +205,40 @@ async function openAssetDetail(asset: AssetRecord) {
 }
 
 function goToPreviousPage() {
+  if (currentPage.value <= 1 || cursorHistory.value.length === 0) {
+    return;
+  }
+  const previousCursor = cursorHistory.value.pop() ?? null;
+  currentCursor.value = previousCursor;
   currentPage.value = Math.max(1, currentPage.value - 1);
+  void fetchAssetInventory();
 }
 
 function goToNextPage() {
+  if (!nextCursor.value || currentPage.value >= pageCount.value) {
+    return;
+  }
+  cursorHistory.value.push(currentCursor.value);
+  currentCursor.value = nextCursor.value;
   currentPage.value = Math.min(pageCount.value, currentPage.value + 1);
+  void fetchAssetInventory();
 }
 
-watch([searchQuery, severityFilter, portFilter, timeField, dateFrom, dateTo, pageSize], () => {
+watch(searchQuery, (value) => {
+  if (searchDebounceTimer) {
+    window.clearTimeout(searchDebounceTimer);
+  }
+  searchDebounceTimer = window.setTimeout(() => {
+    debouncedSearchQuery.value = value;
+  }, 300);
+});
+
+watch([debouncedSearchQuery, severityFilter, portFilter, timeField, dateFrom, dateTo, pageSize], () => {
+  currentCursor.value = null;
+  nextCursor.value = null;
+  cursorHistory.value = [];
   currentPage.value = 1;
+  void fetchAssetInventory();
 });
 
 watch(pageCount, (value) => {
@@ -282,7 +248,14 @@ watch(pageCount, (value) => {
 });
 
 onMounted(() => {
+  debouncedSearchQuery.value = searchQuery.value;
   void fetchAssetInventory();
+});
+
+onBeforeUnmount(() => {
+  if (searchDebounceTimer) {
+    window.clearTimeout(searchDebounceTimer);
+  }
 });
 </script>
 
@@ -315,7 +288,7 @@ onMounted(() => {
         </div>
         <div class="flex flex-wrap items-center gap-2 xl:justify-end">
           <span class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-300">
-            Total: {{ assets.length }}
+            Total: {{ stats.assets }}
           </span>
           <span class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-300">
             Filtered: {{ totalFiltered }}
@@ -496,7 +469,7 @@ onMounted(() => {
             <button
               type="button"
               class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-white/20 hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
-              :disabled="currentPage === pageCount"
+              :disabled="!nextCursor || currentPage === pageCount"
               @click="goToNextPage"
             >
               Next

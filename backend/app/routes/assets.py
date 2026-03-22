@@ -1,5 +1,7 @@
+import base64
 from datetime import datetime, timezone
 import ipaddress
+import json
 import re
 
 from bson import ObjectId
@@ -22,6 +24,107 @@ router = APIRouter()
 VALID_SEVERITIES = {"critical", "high", "medium", "low", "info"}
 MAX_NETWORK_NEIGHBORS = 36
 MAX_NETWORK_IP_NODES = 12
+ASSET_DEFAULT_LAST_SEEN = datetime(1970, 1, 1, tzinfo=timezone.utc)
+
+
+def _encode_cursor(payload: dict[str, object]) -> str:
+    return base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).decode("utf-8")
+
+
+def _decode_cursor(cursor: str) -> dict[str, object]:
+    try:
+        decoded = base64.urlsafe_b64decode(cursor.encode("utf-8")).decode("utf-8")
+        payload = json.loads(decoded)
+        if not isinstance(payload, dict):
+            raise ValueError("invalid cursor payload")
+        return payload
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="Invalid cursor.") from exc
+
+
+def _parse_date_boundary(value: str | None, boundary: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        if boundary == "start":
+            return datetime.fromisoformat(f"{value}T00:00:00+00:00")
+        return datetime.fromisoformat(f"{value}T23:59:59.999000+00:00")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid date value: {value}") from exc
+
+
+def _parse_cursor_datetime(value: object) -> datetime:
+    if not isinstance(value, str):
+        raise HTTPException(status_code=400, detail="Invalid cursor.")
+    try:
+        parsed = datetime.fromisoformat(value)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail="Invalid cursor.") from exc
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed
+
+
+def _asset_list_cursor_filter(cursor_payload: dict[str, object]) -> dict:
+    vulnerability_count = cursor_payload.get("vulnerability_count")
+    last_seen = _parse_cursor_datetime(cursor_payload.get("last_seen"))
+    mongo_id_raw = cursor_payload.get("id")
+    if not isinstance(vulnerability_count, int) or not isinstance(mongo_id_raw, str):
+        raise HTTPException(status_code=400, detail="Invalid cursor.")
+    try:
+        mongo_id = ObjectId(mongo_id_raw)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="Invalid cursor.") from exc
+
+    return {
+        "$or": [
+            {"vulnerability_count": {"$lt": vulnerability_count}},
+            {
+                "$and": [
+                    {"vulnerability_count": vulnerability_count},
+                    {"last_seen": {"$lt": last_seen}},
+                ]
+            },
+            {
+                "$and": [
+                    {"vulnerability_count": vulnerability_count},
+                    {"last_seen": last_seen},
+                    {"_id": {"$lt": mongo_id}},
+                ]
+            },
+        ]
+    }
+
+
+def _asset_vuln_cursor_filter(cursor_payload: dict[str, object]) -> dict:
+    severity_rank = cursor_payload.get("severity_rank")
+    last_seen = _parse_cursor_datetime(cursor_payload.get("last_seen"))
+    mongo_id_raw = cursor_payload.get("id")
+    if not isinstance(severity_rank, int) or not isinstance(mongo_id_raw, str):
+        raise HTTPException(status_code=400, detail="Invalid cursor.")
+    try:
+        mongo_id = ObjectId(mongo_id_raw)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="Invalid cursor.") from exc
+
+    return {
+        "$or": [
+            {"severity_rank": {"$lt": severity_rank}},
+            {
+                "$and": [
+                    {"severity_rank": severity_rank},
+                    {"last_seen": {"$lt": last_seen}},
+                ]
+            },
+            {
+                "$and": [
+                    {"severity_rank": severity_rank},
+                    {"last_seen": last_seen},
+                    {"_id": {"$lt": mongo_id}},
+                ]
+            },
+        ]
+    }
 
 
 def _serialize_mongo_document(document: dict) -> dict:
@@ -109,7 +212,13 @@ async def _get_asset_by_id(asset_id: str):
 @router.get("/assets", response_model=AssetListResponse)
 async def list_assets(
     search: str | None = Query(default=None),
-    limit: int = Query(default=250, ge=1, le=1000),
+    severity: str | None = Query(default=None),
+    port: str | None = Query(default=None),
+    time_field: str | None = Query(default="last_seen"),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    cursor: str | None = Query(default=None),
+    page_size: int = Query(default=20, ge=1, le=200),
     _: CurrentUser = Depends(require_role("admin", "viewer")),
 ):
     db = get_database()
@@ -123,10 +232,61 @@ async def list_assets(
             {"services": {"$elemMatch": {"$regex": search, "$options": "i"}}},
             {"template_ids": {"$elemMatch": {"$regex": search, "$options": "i"}}},
         ]
+    if severity:
+        normalized_severity = severity.strip().lower()
+        if normalized_severity in VALID_SEVERITIES:
+            query["highest_severity"] = normalized_severity
+    if port:
+        normalized_port = port.strip()
+        if normalized_port:
+            query["open_ports"] = normalized_port
 
-    cursor = db.assets.find(query).sort([("vulnerability_count", -1), ("host", 1)]).limit(limit)
-    items = [_normalize_asset(document) async for document in cursor]
-    return AssetListResponse(items=[AssetResponse(**item) for item in items], total=len(items))
+    normalized_time_field = (time_field or "last_seen").strip()
+    if normalized_time_field not in {"first_seen", "last_seen"}:
+        normalized_time_field = "last_seen"
+
+    from_boundary = _parse_date_boundary(date_from, "start")
+    to_boundary = _parse_date_boundary(date_to, "end")
+    if from_boundary or to_boundary:
+        time_filter: dict[str, datetime] = {}
+        if from_boundary:
+            time_filter["$gte"] = from_boundary
+        if to_boundary:
+            time_filter["$lte"] = to_boundary
+        query[normalized_time_field] = time_filter
+
+    final_query = query
+    if cursor:
+        cursor_payload = _decode_cursor(cursor)
+        cursor_filter = _asset_list_cursor_filter(cursor_payload)
+        final_query = {"$and": [query, cursor_filter]} if query else cursor_filter
+
+    total = await db.assets.count_documents(query)
+    documents = await db.assets.find(final_query).sort(
+        [("vulnerability_count", -1), ("last_seen", -1), ("_id", -1)]
+    ).limit(page_size).to_list(length=page_size)
+
+    items = [_normalize_asset(document) for document in documents]
+    next_cursor = None
+    if len(documents) == page_size:
+        last_document = documents[-1]
+        last_seen = last_document.get("last_seen")
+        if not isinstance(last_seen, datetime):
+            last_seen = ASSET_DEFAULT_LAST_SEEN
+        next_cursor = _encode_cursor(
+            {
+                "vulnerability_count": int(last_document.get("vulnerability_count", 0) or 0),
+                "last_seen": last_seen.isoformat(),
+                "id": str(last_document.get("_id")),
+            }
+        )
+
+    return AssetListResponse(
+        items=[AssetResponse(**item) for item in items],
+        total=total,
+        next_cursor=next_cursor,
+        page_size=page_size,
+    )
 
 
 @router.get("/assets/{asset_id}/detail", response_model=AssetDetailResponse)
@@ -136,16 +296,135 @@ async def get_asset_detail(asset_id: str, _: CurrentUser = Depends(require_role(
 
 
 @router.get("/assets/{asset_id}/vulnerabilities", response_model=AssetVulnerabilitiesResponse)
-async def get_asset_vulnerabilities(asset_id: str, _: CurrentUser = Depends(require_role("admin", "viewer"))):
+async def get_asset_vulnerabilities(
+    asset_id: str,
+    search: str | None = Query(default=None),
+    severity: str | None = Query(default=None),
+    port: str | None = Query(default=None),
+    cursor: str | None = Query(default=None),
+    page_size: int = Query(default=20, ge=1, le=200),
+    _: CurrentUser = Depends(require_role("admin", "viewer")),
+):
     db, asset = await _get_asset_by_id(asset_id)
     host = asset.get("host")
-    cursor = db.vulnerabilities.find({"host": host}).sort("last_seen", -1)
-    items = [_normalize_vulnerability(document) async for document in cursor]
+
+    query: dict[str, object] = {"host": host}
+    if severity:
+        normalized_severity = severity.strip().lower()
+        if normalized_severity in VALID_SEVERITIES:
+            query["$or"] = [
+                {"override_severity": normalized_severity},
+                {"severity": normalized_severity},
+            ]
+    if port:
+        normalized_port = port.strip()
+        if normalized_port:
+            query["port"] = normalized_port
+    if search:
+        query["$and"] = [
+            {
+                "$or": [
+                    {"name": {"$regex": search, "$options": "i"}},
+                    {"host": {"$regex": search, "$options": "i"}},
+                    {"ip": {"$regex": search, "$options": "i"}},
+                    {"template_id": {"$regex": search, "$options": "i"}},
+                    {"template-id": {"$regex": search, "$options": "i"}},
+                    {"port": {"$regex": search, "$options": "i"}},
+                ]
+            }
+        ]
+
+    if "$or" in query and "$and" in query:
+        base_or = query.pop("$or")
+        and_conditions = query.get("$and", [])
+        if isinstance(and_conditions, list):
+            and_conditions.insert(0, {"$or": base_or})
+            query["$and"] = and_conditions
+
+    total = await db.vulnerabilities.count_documents(query)
+
+    cursor_filter = None
+    if cursor:
+        cursor_filter = _asset_vuln_cursor_filter(_decode_cursor(cursor))
+
+    pipeline: list[dict] = [
+        {"$match": query},
+        {
+            "$addFields": {
+                "severity_rank": {
+                    "$switch": {
+                        "branches": [
+                            {
+                                "case": {
+                                    "$eq": [{"$toLower": {"$ifNull": ["$override_severity", "$severity"]}}, "critical"]
+                                },
+                                "then": 5,
+                            },
+                            {
+                                "case": {
+                                    "$eq": [{"$toLower": {"$ifNull": ["$override_severity", "$severity"]}}, "high"]
+                                },
+                                "then": 4,
+                            },
+                            {
+                                "case": {
+                                    "$eq": [{"$toLower": {"$ifNull": ["$override_severity", "$severity"]}}, "medium"]
+                                },
+                                "then": 3,
+                            },
+                            {
+                                "case": {
+                                    "$eq": [{"$toLower": {"$ifNull": ["$override_severity", "$severity"]}}, "low"]
+                                },
+                                "then": 2,
+                            },
+                            {
+                                "case": {
+                                    "$eq": [{"$toLower": {"$ifNull": ["$override_severity", "$severity"]}}, "info"]
+                                },
+                                "then": 1,
+                            },
+                        ],
+                        "default": 0,
+                    }
+                }
+            }
+        },
+    ]
+
+    if cursor_filter:
+        pipeline.append({"$match": cursor_filter})
+
+    pipeline.extend(
+        [
+            {"$sort": {"severity_rank": -1, "last_seen": -1, "_id": -1}},
+            {"$limit": page_size},
+        ]
+    )
+    documents = await db.vulnerabilities.aggregate(pipeline).to_list(length=page_size)
+    items = [_normalize_vulnerability(document) for document in documents]
+
+    next_cursor = None
+    if len(documents) == page_size:
+        last_document = documents[-1]
+        last_seen = last_document.get("last_seen")
+        if not isinstance(last_seen, datetime):
+            last_seen = ASSET_DEFAULT_LAST_SEEN
+        next_cursor = _encode_cursor(
+            {
+                "severity_rank": int(last_document.get("severity_rank", 0) or 0),
+                "last_seen": last_seen.isoformat(),
+                "id": str(last_document.get("_id")),
+            }
+        )
+
     return AssetVulnerabilitiesResponse(
         asset_id=str(asset.get("_id")),
         asset_host=str(host or ""),
         items=items,
-        total=len(items),
+        total=total,
+        next_cursor=next_cursor,
+        page_size=page_size,
     )
 
 

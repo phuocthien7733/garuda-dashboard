@@ -1,5 +1,5 @@
 from motor.motor_asyncio import AsyncIOMotorClient
-from pymongo import ASCENDING
+from pymongo import ASCENDING, DESCENDING
 
 from app.config import get_settings
 
@@ -14,10 +14,23 @@ def get_database():
 
 async def ensure_indexes() -> None:
     await database.vulnerabilities.create_index([("fingerprint", ASCENDING)], unique=True)
-    await database.vulnerabilities.create_index([("host", ASCENDING)])
-    await database.vulnerabilities.create_index([("severity", ASCENDING), ("status", ASCENDING)])
-    await database.vulnerabilities.create_index([("last_seen", ASCENDING)])
+    await database.vulnerabilities.create_index([("status", ASCENDING), ("severity", ASCENDING), ("last_seen", DESCENDING)])
+    await database.vulnerabilities.create_index([("host", ASCENDING), ("status", ASCENDING), ("last_seen", DESCENDING)])
+    await database.vulnerabilities.create_index([("asset_id", ASCENDING), ("status", ASCENDING), ("severity", ASCENDING), ("last_seen", DESCENDING)])
+    await database.vulnerabilities.create_index([("first_seen", DESCENDING)])
+    await database.vulnerabilities.create_index([("last_seen", DESCENDING)])
+    await database.vulnerabilities.create_index([("template_id", ASCENDING)])
+    await database.vulnerabilities.create_index([("scanner", ASCENDING), ("status", ASCENDING), ("last_seen", DESCENDING)])
+    await database.vulnerabilities.create_index([("host_normalized", ASCENDING), ("last_seen", DESCENDING)])
     await database.assets.create_index([("host", ASCENDING)], unique=True)
+    await database.assets.create_index([("highest_severity", ASCENDING), ("vulnerability_count", DESCENDING), ("last_seen", DESCENDING)])
+    await database.assets.create_index([("last_seen", DESCENDING)])
+    await database.assets.create_index([("type", ASCENDING), ("highest_severity", ASCENDING)])
+    await database.vulnerabilities_archive.create_index([("fingerprint", ASCENDING)], unique=True)
+    await database.vulnerabilities_archive.create_index([("status", ASCENDING), ("severity", ASCENDING), ("last_seen", DESCENDING)])
+    await database.vulnerabilities_archive.create_index([("archived_at", DESCENDING)])
+    await database.vulnerabilities_archive.create_index([("host", ASCENDING), ("last_seen", DESCENDING)])
+    await database.dashboard_snapshots.create_index([("generated_at", DESCENDING)])
 
 
 def close_database() -> None:

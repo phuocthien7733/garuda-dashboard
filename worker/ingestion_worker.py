@@ -8,8 +8,10 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers.polling import PollingObserver
 
 from app.config import get_settings
+from app.archive import archive_stale_vulnerabilities
 from app.db import close_database, ensure_indexes
 from app.scanners import get_scanner_folders, get_scanner_for_file
+from app.snapshots import recompute_dashboard_snapshots
 
 logging.basicConfig(
     level=logging.INFO,
@@ -21,6 +23,8 @@ settings = get_settings()
 incoming_dir = Path(settings.incoming_dir)
 archive_dir = Path(settings.archive_dir)
 processing_files: set[Path] = set()
+queued_files: set[Path] = set()
+file_queue: asyncio.Queue[Path] = asyncio.Queue()
 event_loop: asyncio.AbstractEventLoop | None = None
 
 
@@ -53,7 +57,7 @@ def _schedule_file_processing(file_path: Path) -> None:
     if event_loop is None or event_loop.is_closed():
         logger.error("Cannot schedule %s because the event loop is not available", file_path.name)
         return
-    asyncio.run_coroutine_threadsafe(handle_file(file_path), event_loop)
+    asyncio.run_coroutine_threadsafe(enqueue_file(file_path), event_loop)
 
 
 class IncomingFileHandler(FileSystemEventHandler):
@@ -68,15 +72,25 @@ class IncomingFileHandler(FileSystemEventHandler):
         _schedule_file_processing(Path(event.dest_path))
 
 
-async def handle_file(file_path: Path) -> None:
-    if file_path in processing_files or not file_path.exists():
+async def enqueue_file(file_path: Path) -> None:
+    normalized = file_path.resolve()
+    if normalized in queued_files:
         return
+    queued_files.add(normalized)
+    await file_queue.put(normalized)
+
+
+async def handle_file(file_path: Path) -> bool:
+    if file_path in processing_files:
+        return False
+    if not file_path.exists():
+        return False
 
     processing_files.add(file_path)
     try:
         if not _wait_until_file_ready(file_path):
             logger.warning("Skipping %s because the file was not ready in time", file_path.name)
-            return
+            return False
 
         scanner = get_scanner_for_file(file_path, incoming_dir)
         logger.info(
@@ -99,15 +113,29 @@ async def handle_file(file_path: Path) -> None:
             summary.resolved,
             summary.assets_updated,
         )
+        return summary.processed > 0
     except Exception:
         logger.exception("Failed processing %s", file_path.name)
+        return False
     finally:
         processing_files.discard(file_path)
 
 
 async def process_existing_files() -> None:
     for file_path in sorted(incoming_dir.rglob("*.json")):
-        await handle_file(file_path)
+        await enqueue_file(file_path)
+
+
+async def queue_consumer(name: str, snapshot_dirty_ref: dict[str, bool]) -> None:
+    while True:
+        file_path = await file_queue.get()
+        try:
+            changed = await handle_file(file_path)
+            if changed:
+                snapshot_dirty_ref["dirty"] = True
+        finally:
+            queued_files.discard(file_path)
+            file_queue.task_done()
 
 
 async def main_async() -> None:
@@ -119,19 +147,63 @@ async def main_async() -> None:
     logger.info("Worker bootstrap ready | incoming=%s archive=%s", incoming_dir, archive_dir)
     await ensure_indexes()
     await process_existing_files()
+    last_archive_sweep = 0.0
+    last_snapshot_refresh = 0.0
+    snapshot_state = {"dirty": True}
 
     observer = PollingObserver(timeout=1)
     observer.schedule(IncomingFileHandler(), str(incoming_dir), recursive=True)
     observer.start()
     logger.info("Watching %s for new JSON files in scanner folders: %s", incoming_dir, ", ".join(get_scanner_folders()))
+    concurrency = max(1, int(settings.ingest_concurrency))
+    consumers = [
+        asyncio.create_task(queue_consumer(f"consumer-{index + 1}", snapshot_state))
+        for index in range(concurrency)
+    ]
 
     try:
         while True:
             await process_existing_files()
+            now_monotonic = time.monotonic()
+            if (
+                now_monotonic - last_archive_sweep
+                >= settings.vulnerability_archive_sweep_interval_seconds
+            ):
+                try:
+                    archived_count = await archive_stale_vulnerabilities(
+                        settings.vulnerability_archive_after_days
+                    )
+                    if archived_count:
+                        logger.info(
+                            "Archived %s stale non-open vulnerabilities (>%s days)",
+                            archived_count,
+                            settings.vulnerability_archive_after_days,
+                        )
+                        snapshot_state["dirty"] = True
+                except Exception:
+                    logger.exception("Archive sweep failed")
+                finally:
+                    last_archive_sweep = now_monotonic
+
+            if (
+                snapshot_state["dirty"]
+                and now_monotonic - last_snapshot_refresh >= settings.snapshot_refresh_interval_seconds
+            ):
+                try:
+                    await recompute_dashboard_snapshots()
+                    logger.info("Dashboard snapshots refreshed")
+                    snapshot_state["dirty"] = False
+                except Exception:
+                    logger.exception("Snapshot refresh failed")
+                finally:
+                    last_snapshot_refresh = now_monotonic
             await asyncio.sleep(1)
     except KeyboardInterrupt:
         observer.stop()
     finally:
+        for consumer in consumers:
+            consumer.cancel()
+        await asyncio.gather(*consumers, return_exceptions=True)
         observer.stop()
         observer.join()
         close_database()

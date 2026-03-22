@@ -14,6 +14,10 @@ class Settings(BaseSettings):
     mongo_auth_source: str = "easm_db"
     incoming_dir: str = "/app/data/incoming"
     archive_dir: str = "/app/data/archive"
+    vulnerability_archive_after_days: int = 30
+    vulnerability_archive_sweep_interval_seconds: int = 3600
+    ingest_concurrency: int = 2
+    snapshot_refresh_interval_seconds: int = 30
 
     model_config = SettingsConfigDict(
         env_file=".env",

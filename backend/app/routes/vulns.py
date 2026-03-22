@@ -1,14 +1,19 @@
+import asyncio
+import base64
 from datetime import datetime, timezone
+import json
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import HTTPException
+from bson import ObjectId
 from pymongo import DESCENDING
 
 from app.core.rbac import require_role
 from app.db.mongo import get_database
 from app.schemas.auth import CurrentUser
 from app.schemas.vulnerability import (
+    VulnerabilityArchiveRestoreRequest,
     VulnerabilityBulkPatchRequest,
     VulnerabilityListResponse,
     VulnerabilityPatchRequest,
@@ -29,30 +34,252 @@ def _serialize_vulnerability(document: dict) -> dict:
     return payload
 
 
+def _encode_cursor(severity_rank: int, last_seen: datetime, mongo_id: ObjectId) -> str:
+    payload = {
+        "severity_rank": severity_rank,
+        "last_seen": last_seen.isoformat(),
+        "id": str(mongo_id),
+    }
+    return base64.urlsafe_b64encode(json.dumps(payload).encode("utf-8")).decode("utf-8")
+
+
+def _decode_cursor(cursor: str) -> tuple[int, datetime, ObjectId]:
+    try:
+        decoded = base64.urlsafe_b64decode(cursor.encode("utf-8")).decode("utf-8")
+        payload = json.loads(decoded)
+        severity_rank_raw = payload.get("severity_rank")
+        last_seen_raw = payload.get("last_seen")
+        mongo_id_raw = payload.get("id")
+        if (
+            not isinstance(severity_rank_raw, int)
+            or not isinstance(last_seen_raw, str)
+            or not isinstance(mongo_id_raw, str)
+        ):
+            raise ValueError("invalid cursor payload")
+        last_seen = datetime.fromisoformat(last_seen_raw)
+        if last_seen.tzinfo is None:
+            last_seen = last_seen.replace(tzinfo=timezone.utc)
+        mongo_id = ObjectId(mongo_id_raw)
+        return severity_rank_raw, last_seen, mongo_id
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail="Invalid cursor.") from exc
+
+
+def _parse_date_boundary(value: str | None, boundary: str) -> datetime | None:
+    if not value:
+        return None
+    try:
+        if boundary == "start":
+            return datetime.fromisoformat(f"{value}T00:00:00+00:00")
+        return datetime.fromisoformat(f"{value}T23:59:59.999000+00:00")
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=f"Invalid date value: {value}") from exc
+
+
+async def _list_vulnerabilities_internal(
+    *,
+    include_archive: bool,
+    severity: str | None,
+    status_filter: str | None,
+    search: str | None,
+    archived_reason: str | None,
+    port: str | None,
+    time_field: str | None,
+    date_from: str | None,
+    date_to: str | None,
+    cursor: str | None,
+    page_size: int,
+) -> VulnerabilityListResponse:
+    db = get_database()
+    collection = db.vulnerabilities_archive if include_archive else db.vulnerabilities
+
+    query: dict[str, object] = {}
+    if severity:
+        query["severity"] = severity.strip().lower()
+    if status_filter:
+        query["status"] = status_filter
+    if include_archive and archived_reason:
+        query["archived_reason"] = archived_reason.strip()
+
+    if port:
+        normalized_port = port.strip()
+        if normalized_port:
+            query["port"] = normalized_port
+
+    if search:
+        query["$or"] = [
+            {"host": {"$regex": search, "$options": "i"}},
+            {"name": {"$regex": search, "$options": "i"}},
+            {"template_id": {"$regex": search, "$options": "i"}},
+            {"template-id": {"$regex": search, "$options": "i"}},
+        ]
+
+    normalized_time_field = (time_field or "last_seen").strip()
+    if normalized_time_field not in {"first_seen", "last_seen"}:
+        normalized_time_field = "last_seen"
+
+    from_boundary = _parse_date_boundary(date_from, "start")
+    to_boundary = _parse_date_boundary(date_to, "end")
+    if from_boundary or to_boundary:
+        time_filter: dict[str, datetime] = {}
+        if from_boundary:
+            time_filter["$gte"] = from_boundary
+        if to_boundary:
+            time_filter["$lte"] = to_boundary
+        query[normalized_time_field] = time_filter
+
+    cursor_filter = None
+    if cursor:
+        cursor_severity_rank, cursor_last_seen, cursor_id = _decode_cursor(cursor)
+        cursor_filter = {
+            "$or": [
+                {"severity_rank": {"$lt": cursor_severity_rank}},
+                {"$and": [{"severity_rank": cursor_severity_rank}, {"last_seen": {"$lt": cursor_last_seen}}]},
+                {
+                    "$and": [
+                        {"severity_rank": cursor_severity_rank},
+                        {"last_seen": cursor_last_seen},
+                        {"_id": {"$lt": cursor_id}},
+                    ]
+                },
+            ]
+        }
+
+    total = await collection.count_documents(query)
+
+    pipeline: list[dict] = [
+        {"$match": query},
+        {
+            "$addFields": {
+                "severity_rank": {
+                    "$switch": {
+                        "branches": [
+                            {
+                                "case": {
+                                    "$eq": [{"$toLower": {"$ifNull": ["$override_severity", "$severity"]}}, "critical"]
+                                },
+                                "then": 5,
+                            },
+                            {
+                                "case": {
+                                    "$eq": [{"$toLower": {"$ifNull": ["$override_severity", "$severity"]}}, "high"]
+                                },
+                                "then": 4,
+                            },
+                            {
+                                "case": {
+                                    "$eq": [{"$toLower": {"$ifNull": ["$override_severity", "$severity"]}}, "medium"]
+                                },
+                                "then": 3,
+                            },
+                            {
+                                "case": {
+                                    "$eq": [{"$toLower": {"$ifNull": ["$override_severity", "$severity"]}}, "low"]
+                                },
+                                "then": 2,
+                            },
+                            {
+                                "case": {
+                                    "$eq": [{"$toLower": {"$ifNull": ["$override_severity", "$severity"]}}, "info"]
+                                },
+                                "then": 1,
+                            },
+                        ],
+                        "default": 0,
+                    }
+                }
+            }
+        },
+    ]
+
+    if cursor_filter:
+        pipeline.append({"$match": cursor_filter})
+
+    pipeline.extend(
+        [
+            {"$sort": {"severity_rank": -1, "last_seen": DESCENDING, "_id": DESCENDING}},
+            {"$limit": page_size},
+        ]
+    )
+
+    documents = await collection.aggregate(pipeline).to_list(length=page_size)
+
+    items = [_serialize_vulnerability(document) for document in documents]
+
+    next_cursor = None
+    if len(documents) == page_size:
+        last_document = documents[-1]
+        last_seen = last_document.get("last_seen")
+        severity_rank = int(last_document.get("severity_rank", 0) or 0)
+        mongo_id = last_document.get("_id")
+        if isinstance(last_seen, datetime) and isinstance(mongo_id, ObjectId):
+            next_cursor = _encode_cursor(severity_rank, last_seen, mongo_id)
+
+    return VulnerabilityListResponse(
+        items=items,
+        total=total,
+        next_cursor=next_cursor,
+        page_size=page_size,
+    )
+
+
 @router.get("/vulns", response_model=VulnerabilityListResponse)
 async def list_vulnerabilities(
     severity: str | None = Query(default=None),
     status_filter: str | None = Query(default=None, alias="status"),
     search: str | None = Query(default=None),
-    limit: int = Query(default=5000, ge=1, le=20000),
+    include_archive: bool = Query(default=False),
+    archived_reason: str | None = Query(default=None),
+    port: str | None = Query(default=None),
+    time_field: str | None = Query(default="last_seen"),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    cursor: str | None = Query(default=None),
+    page_size: int = Query(default=20, ge=1, le=200),
     _: CurrentUser = Depends(require_role("admin", "viewer")),
 ):
-    db = get_database()
-    query: dict[str, object] = {}
-    if severity:
-        query["severity"] = severity
-    if status_filter:
-        query["status"] = status_filter
-    if search:
-        query["$or"] = [
-            {"host": {"$regex": search, "$options": "i"}},
-            {"name": {"$regex": search, "$options": "i"}},
-            {"template-id": {"$regex": search, "$options": "i"}},
-        ]
+    return await _list_vulnerabilities_internal(
+        include_archive=include_archive,
+        severity=severity,
+        status_filter=status_filter,
+        search=search,
+        archived_reason=archived_reason,
+        port=port,
+        time_field=time_field,
+        date_from=date_from,
+        date_to=date_to,
+        cursor=cursor,
+        page_size=page_size,
+    )
 
-    cursor = db.vulnerabilities.find(query).sort("last_seen", DESCENDING).limit(limit)
-    items = [_serialize_vulnerability(document) async for document in cursor]
-    return VulnerabilityListResponse(items=items, total=len(items))
+
+@router.get("/vulns/archive", response_model=VulnerabilityListResponse)
+async def list_archived_vulnerabilities(
+    severity: str | None = Query(default=None),
+    status_filter: str | None = Query(default=None, alias="status"),
+    search: str | None = Query(default=None),
+    archived_reason: str | None = Query(default=None),
+    port: str | None = Query(default=None),
+    time_field: str | None = Query(default="last_seen"),
+    date_from: str | None = Query(default=None),
+    date_to: str | None = Query(default=None),
+    cursor: str | None = Query(default=None),
+    page_size: int = Query(default=20, ge=1, le=200),
+    _: CurrentUser = Depends(require_role("admin", "viewer")),
+):
+    return await _list_vulnerabilities_internal(
+        include_archive=True,
+        severity=severity,
+        status_filter=status_filter,
+        search=search,
+        archived_reason=archived_reason,
+        port=port,
+        time_field=time_field,
+        date_from=date_from,
+        date_to=date_to,
+        cursor=cursor,
+        page_size=page_size,
+    )
 
 
 @router.get("/vulns/recent")
@@ -86,6 +313,39 @@ async def patch_vulnerability(
         await recalculate_asset(db, str(host))
 
     return {"updated": True}
+
+
+@router.post("/vulns/{vuln_id}/archive")
+async def archive_vulnerability(
+    vuln_id: str,
+    _: CurrentUser = Depends(require_role("admin")),
+):
+    db = get_database()
+    vulnerability = await db.vulnerabilities.find_one({"fingerprint": vuln_id})
+    if not vulnerability:
+        raise HTTPException(status_code=404, detail="Vulnerability not found.")
+
+    archived = dict(vulnerability)
+    archived_id = archived.pop("_id", None)
+    archive_time = datetime.now(timezone.utc)
+    archived["archived_at"] = archive_time
+    archived["archived_reason"] = "manual-action"
+
+    await db.vulnerabilities_archive.update_one(
+        {"fingerprint": vuln_id},
+        {"$set": archived},
+        upsert=True,
+    )
+    if archived_id is not None:
+        await db.vulnerabilities.delete_one({"_id": archived_id})
+    else:
+        await db.vulnerabilities.delete_one({"fingerprint": vuln_id})
+
+    host = archived.get("host")
+    if host:
+        await recalculate_asset(db, str(host))
+
+    return {"archived": True}
 
 
 @router.post("/vulns/bulk-triage")
@@ -123,4 +383,103 @@ async def bulk_patch_vulnerabilities(
         "updated": True,
         "vulnerabilities": result.modified_count,
         "assets": len(affected_hosts),
+    }
+
+
+@router.post("/vulns/archive/{vuln_id}/restore")
+async def restore_archived_vulnerability(
+    vuln_id: str,
+    _: CurrentUser = Depends(require_role("admin")),
+):
+    db = get_database()
+    archived = await db.vulnerabilities_archive.find_one({"fingerprint": vuln_id})
+    if not archived:
+        raise HTTPException(status_code=404, detail="Archived vulnerability not found.")
+
+    restored = dict(archived)
+    archived_id = restored.pop("_id", None)
+    restored.pop("archived_at", None)
+    restored.pop("archived_reason", None)
+    restored["status"] = "Open"
+    restored["last_seen"] = datetime.now(timezone.utc)
+
+    await db.vulnerabilities.update_one(
+        {"fingerprint": vuln_id},
+        {"$set": restored},
+        upsert=True,
+    )
+    if archived_id is not None:
+        await db.vulnerabilities_archive.delete_one({"_id": archived_id})
+    else:
+        await db.vulnerabilities_archive.delete_one({"fingerprint": vuln_id})
+
+    host = restored.get("host")
+    if host:
+        await recalculate_asset(db, str(host))
+
+    return {"restored": True}
+
+
+@router.post("/vulns/archive/restore-bulk")
+async def restore_archived_vulnerabilities_bulk(
+    payload: VulnerabilityArchiveRestoreRequest,
+    _: CurrentUser = Depends(require_role("admin")),
+):
+    db = get_database()
+    fingerprints = sorted({item.strip() for item in payload.fingerprints if item.strip()})
+    if not fingerprints:
+        raise HTTPException(status_code=400, detail="No archived vulnerabilities selected.")
+
+    archived_documents = await db.vulnerabilities_archive.find(
+        {"fingerprint": {"$in": fingerprints}},
+    ).to_list(length=None)
+    if not archived_documents:
+        raise HTTPException(status_code=404, detail="No matching archived vulnerabilities found.")
+
+    now = datetime.now(timezone.utc)
+    upsert_tasks = []
+    host_set: set[str] = set()
+    archive_ids = []
+
+    for document in archived_documents:
+        archived_id = document.get("_id")
+        if archived_id is not None:
+            archive_ids.append(archived_id)
+
+        restored = dict(document)
+        restored.pop("_id", None)
+        restored.pop("archived_at", None)
+        restored.pop("archived_reason", None)
+        restored["status"] = "Open"
+        restored["last_seen"] = now
+
+        fingerprint = restored.get("fingerprint")
+        if not fingerprint:
+            continue
+        upsert_tasks.append(
+            db.vulnerabilities.update_one(
+                {"fingerprint": fingerprint},
+                {"$set": restored},
+                upsert=True,
+            )
+        )
+        host = restored.get("host")
+        if host:
+            host_set.add(str(host))
+
+    if upsert_tasks:
+        await asyncio.gather(*upsert_tasks)
+
+    if archive_ids:
+        await db.vulnerabilities_archive.delete_many({"_id": {"$in": archive_ids}})
+    else:
+        await db.vulnerabilities_archive.delete_many({"fingerprint": {"$in": fingerprints}})
+
+    for host in sorted(host_set):
+        await recalculate_asset(db, host)
+
+    return {
+        "restored": True,
+        "vulnerabilities": len(archived_documents),
+        "assets": len(host_set),
     }

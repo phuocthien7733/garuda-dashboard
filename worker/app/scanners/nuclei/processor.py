@@ -2,7 +2,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from pydantic import ValidationError
+from pymongo import ReturnDocument
 
+from app.core.canonical import normalize_status
 from app.core.host_classification import classify_host_type
 from app.db import get_database
 from app.fingerprint import build_fingerprint
@@ -29,12 +31,19 @@ def _sort_ports(values: set[str]) -> list[str]:
 
 def _normalize_document(finding: IngestedVulnerability, source_file: str) -> dict:
     document = finding.model_dump(by_alias=True, exclude_none=True, exclude={"info"})
+    normalized_host = finding.host.strip().lower()
     document.update(
         {
             "name": finding.name,
             "severity": finding.normalized_severity(),
             "source_file": source_file,
             "source_tool": "nuclei",
+            "scanner": "nuclei",
+            "schema_version": 1,
+            "template_id": finding.template_id,
+            "matched_at": finding.matched_at,
+            "host_normalized": normalized_host,
+            "finding_type": "vulnerability",
         }
     )
 
@@ -90,7 +99,13 @@ async def _upsert_asset(
         },
     }
 
-    await db.assets.update_one({"host": host}, update_document, upsert=True)
+    asset_document = await db.assets.find_one_and_update(
+        {"host": host},
+        update_document,
+        upsert=True,
+        return_document=ReturnDocument.AFTER,
+    )
+    return asset_document.get("_id") if asset_document else None
 
 
 async def _recalculate_asset(host: str) -> None:
@@ -114,7 +129,11 @@ async def _recalculate_asset(host: str) -> None:
             }
         )
         template_ids = sorted(
-            {document.get("template-id") for document in vulnerabilities if document.get("template-id")}
+            {
+                document.get("template_id") or document.get("template-id")
+                for document in vulnerabilities
+                if document.get("template_id") or document.get("template-id")
+            }
         )
         last_seen_values = [document.get("last_seen") for document in vulnerabilities if document.get("last_seen")]
         last_seen = max(last_seen_values) if last_seen_values else datetime.now(timezone.utc)
@@ -174,7 +193,7 @@ async def process_file(file_path: Path) -> ProcessingSummary:
         summary.severities_seen.add(normalized_severity)
         touched_hosts.add(finding.host)
 
-        existing = await db.vulnerabilities.find_one({"fingerprint": fingerprint})
+        existing = await db.vulnerabilities.find_one({"fingerprint": fingerprint}, {"fingerprint": 1})
         if existing:
             await db.vulnerabilities.update_one(
                 {"fingerprint": fingerprint},
@@ -183,26 +202,37 @@ async def process_file(file_path: Path) -> ProcessingSummary:
             summary.updated += 1
         else:
             document = _normalize_document(finding, file_path.name)
+            asset_object_id = await _upsert_asset(
+                finding.host,
+                normalized_severity,
+                finding.ip,
+                finding.port,
+                finding.scheme or finding.type,
+                finding.template_id,
+                now,
+            )
             document.update(
                 {
                     "fingerprint": fingerprint,
                     "first_seen": now,
                     "last_seen": now,
-                    "status": "Open",
+                    "status": normalize_status("Open"),
+                    "asset_id": str(asset_object_id) if asset_object_id else None,
                 }
             )
             await db.vulnerabilities.insert_one(document)
             summary.inserted += 1
 
-        await _upsert_asset(
-            finding.host,
-            normalized_severity,
-            finding.ip,
-            finding.port,
-            finding.scheme or finding.type,
-            finding.template_id,
-            now,
-        )
+        if existing:
+            await _upsert_asset(
+                finding.host,
+                normalized_severity,
+                finding.ip,
+                finding.port,
+                finding.scheme or finding.type,
+                finding.template_id,
+                now,
+            )
         summary.assets_updated += 1
         summary.processed += 1
 
