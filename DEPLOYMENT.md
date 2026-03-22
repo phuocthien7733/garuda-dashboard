@@ -16,6 +16,7 @@
 mkdir -p worker/data/incoming/nuclei worker/data/archive/nuclei
 sudo chown -R $USER:$USER worker/data
 chmod -R 755 worker/data
+chown -R 1000:1000 worker/data
 ```
 
 ## Start production stack

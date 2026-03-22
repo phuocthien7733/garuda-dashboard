@@ -4,6 +4,9 @@ import path from "node:path";
 
 export default defineConfig({
   plugins: [vue()],
+  build: {
+    assetsDir: "static",
+  },
   resolve: {
     alias: {
       "@": path.resolve(__dirname, "./src"),
