@@ -28,6 +28,7 @@ class Settings(BaseSettings):
     mfa_code_length: int = 6
     cors_origins: str = ""
     dashboard_snapshot_max_age_seconds: int = 180
+    vulnerability_archive_retention_days: int = 730
 
     model_config = SettingsConfigDict(
         env_file=".env",

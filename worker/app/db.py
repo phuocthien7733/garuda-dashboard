@@ -13,6 +13,7 @@ def get_database():
 
 
 async def ensure_indexes() -> None:
+    retention_seconds = max(1, int(settings.vulnerability_archive_retention_days)) * 24 * 60 * 60
     await database.vulnerabilities.create_index([("fingerprint", ASCENDING)], unique=True)
     await database.vulnerabilities.create_index([("status", ASCENDING), ("severity", ASCENDING), ("last_seen", DESCENDING)])
     await database.vulnerabilities.create_index([("host", ASCENDING), ("status", ASCENDING), ("last_seen", DESCENDING)])
@@ -28,7 +29,18 @@ async def ensure_indexes() -> None:
     await database.assets.create_index([("type", ASCENDING), ("highest_severity", ASCENDING)])
     await database.vulnerabilities_archive.create_index([("fingerprint", ASCENDING)], unique=True)
     await database.vulnerabilities_archive.create_index([("status", ASCENDING), ("severity", ASCENDING), ("last_seen", DESCENDING)])
-    await database.vulnerabilities_archive.create_index([("archived_at", DESCENDING)])
+    archive_index_info = await database.vulnerabilities_archive.index_information()
+    ttl_index_name = "archived_at_ttl"
+    existing_ttl = archive_index_info.get(ttl_index_name)
+    if existing_ttl and existing_ttl.get("expireAfterSeconds") != retention_seconds:
+        await database.vulnerabilities_archive.drop_index(ttl_index_name)
+        existing_ttl = None
+    if not existing_ttl:
+        await database.vulnerabilities_archive.create_index(
+            [("archived_at", ASCENDING)],
+            name=ttl_index_name,
+            expireAfterSeconds=retention_seconds,
+        )
     await database.vulnerabilities_archive.create_index([("host", ASCENDING), ("last_seen", DESCENDING)])
     await database.dashboard_snapshots.create_index([("generated_at", DESCENDING)])
 

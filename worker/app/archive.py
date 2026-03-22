@@ -57,3 +57,10 @@ async def archive_stale_vulnerabilities(archive_after_days: int, batch_size: int
         total_archived += len(source_ids)
 
     return total_archived
+
+
+async def purge_expired_archived_vulnerabilities(retention_days: int) -> int:
+    db = get_database()
+    cutoff_time = datetime.now(timezone.utc) - timedelta(days=max(1, retention_days))
+    result = await db.vulnerabilities_archive.delete_many({"archived_at": {"$lt": cutoff_time}})
+    return int(result.deleted_count or 0)

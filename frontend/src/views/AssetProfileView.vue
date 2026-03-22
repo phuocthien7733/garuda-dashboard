@@ -75,6 +75,7 @@ const bulkStatus = ref("");
 const bulkSeverity = ref("");
 const triageSubmitting = ref(false);
 const bulkSubmitting = ref(false);
+const archivingFingerprint = ref("");
 let searchDebounceTimer: number | undefined;
 
 const assetId = computed(() => (typeof route.params.id === "string" ? route.params.id : ""));
@@ -474,6 +475,34 @@ async function applyBulkAction() {
   }
 }
 
+async function archiveVulnerability(vulnerability: VulnerabilityRecord) {
+  if (!isAdmin.value) {
+    return;
+  }
+
+  const fingerprint = rowFingerprint(vulnerability);
+  if (!fingerprint) {
+    return;
+  }
+
+  archivingFingerprint.value = fingerprint;
+  try {
+    await api.post(`/vulns/${encodeURIComponent(fingerprint)}/archive`);
+    selectedFingerprints.value = selectedFingerprints.value.filter((item) => item !== fingerprint);
+    if (selectedVulnerability.value && rowFingerprint(selectedVulnerability.value) === fingerprint) {
+      closeVulnerabilityDetail();
+    }
+    if (actionVulnerability.value && rowFingerprint(actionVulnerability.value) === fingerprint) {
+      closeActionModal();
+    }
+    await fetchAssetData();
+  } catch (error) {
+    console.error(error);
+  } finally {
+    archivingFingerprint.value = "";
+  }
+}
+
 function goToPreviousPage() {
   if (currentPage.value <= 1 || cursorHistory.value.length === 0) {
     return;
@@ -835,6 +864,15 @@ onBeforeUnmount(() => {
                       @click="openActionModal(vulnerability)"
                     >
                       Action
+                    </button>
+                    <button
+                      v-if="isAdmin"
+                      type="button"
+                      class="rounded-full border border-[#ffe240]/30 bg-[#ffe240]/14 px-3 py-1.5 text-xs font-semibold text-[#fff09a] transition hover:border-[#ffe240]/45 hover:bg-[#ffe240]/22 disabled:cursor-not-allowed disabled:opacity-50"
+                      :disabled="!rowFingerprint(vulnerability) || archivingFingerprint === rowFingerprint(vulnerability)"
+                      @click="archiveVulnerability(vulnerability)"
+                    >
+                      {{ archivingFingerprint === rowFingerprint(vulnerability) ? 'Archiving...' : 'Archive' }}
                     </button>
                   </div>
                 </td>

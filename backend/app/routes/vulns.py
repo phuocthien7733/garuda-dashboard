@@ -420,6 +420,18 @@ async def restore_archived_vulnerability(
     return {"restored": True}
 
 
+@router.delete("/vulns/archive/{vuln_id}")
+async def delete_archived_vulnerability(
+    vuln_id: str,
+    _: CurrentUser = Depends(require_role("admin")),
+):
+    db = get_database()
+    result = await db.vulnerabilities_archive.delete_one({"fingerprint": vuln_id})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="Archived vulnerability not found.")
+    return {"deleted": True}
+
+
 @router.post("/vulns/archive/restore-bulk")
 async def restore_archived_vulnerabilities_bulk(
     payload: VulnerabilityArchiveRestoreRequest,
@@ -482,4 +494,24 @@ async def restore_archived_vulnerabilities_bulk(
         "restored": True,
         "vulnerabilities": len(archived_documents),
         "assets": len(host_set),
+    }
+
+
+@router.post("/vulns/archive/delete-bulk")
+async def delete_archived_vulnerabilities_bulk(
+    payload: VulnerabilityArchiveRestoreRequest,
+    _: CurrentUser = Depends(require_role("admin")),
+):
+    db = get_database()
+    fingerprints = sorted({item.strip() for item in payload.fingerprints if item.strip()})
+    if not fingerprints:
+        raise HTTPException(status_code=400, detail="No archived vulnerabilities selected.")
+
+    result = await db.vulnerabilities_archive.delete_many({"fingerprint": {"$in": fingerprints}})
+    if result.deleted_count == 0:
+        raise HTTPException(status_code=404, detail="No matching archived vulnerabilities found.")
+
+    return {
+        "deleted": True,
+        "vulnerabilities": int(result.deleted_count or 0),
     }

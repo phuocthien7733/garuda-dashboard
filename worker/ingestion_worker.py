@@ -8,7 +8,7 @@ from watchdog.events import FileSystemEventHandler
 from watchdog.observers.polling import PollingObserver
 
 from app.config import get_settings
-from app.archive import archive_stale_vulnerabilities
+from app.archive import archive_stale_vulnerabilities, purge_expired_archived_vulnerabilities
 from app.db import close_database, ensure_indexes
 from app.scanners import get_scanner_folders, get_scanner_for_file
 from app.snapshots import recompute_dashboard_snapshots
@@ -180,6 +180,15 @@ async def main_async() -> None:
                             settings.vulnerability_archive_after_days,
                         )
                         snapshot_state["dirty"] = True
+                    purged_count = await purge_expired_archived_vulnerabilities(
+                        settings.vulnerability_archive_retention_days
+                    )
+                    if purged_count:
+                        logger.info(
+                            "Purged %s archived vulnerabilities older than %s days",
+                            purged_count,
+                            settings.vulnerability_archive_retention_days,
+                        )
                 except Exception:
                     logger.exception("Archive sweep failed")
                 finally:
