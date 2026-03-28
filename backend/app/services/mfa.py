@@ -19,15 +19,18 @@ async def issue_mfa_challenge(db, username: str, email: str) -> tuple[dict, str]
     settings = get_settings()
     challenge_id = uuid4().hex
     code = generate_mfa_code(settings.mfa_code_length)
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.mfa_code_expiration_minutes)
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(minutes=settings.mfa_code_expiration_minutes)
 
     document = {
         "challenge_id": challenge_id,
         "username": username,
         "email": email,
         "code_hash": hash_mfa_code(challenge_id, code),
-        "created_at": datetime.now(timezone.utc),
+        "created_at": now,
+        "last_sent_at": now,
         "expires_at": expires_at,
+        "failed_attempts": 0,
     }
 
     await db.mfa_challenges.insert_one(document)
@@ -37,11 +40,14 @@ async def issue_mfa_challenge(db, username: str, email: str) -> tuple[dict, str]
 async def refresh_mfa_challenge(db, challenge: dict) -> tuple[dict, str]:
     settings = get_settings()
     code = generate_mfa_code(settings.mfa_code_length)
-    expires_at = datetime.now(timezone.utc) + timedelta(minutes=settings.mfa_code_expiration_minutes)
+    now = datetime.now(timezone.utc)
+    expires_at = now + timedelta(minutes=settings.mfa_code_expiration_minutes)
     update = {
         "code_hash": hash_mfa_code(challenge["challenge_id"], code),
-        "created_at": datetime.now(timezone.utc),
+        "created_at": now,
+        "last_sent_at": now,
         "expires_at": expires_at,
+        "failed_attempts": 0,
     }
     await db.mfa_challenges.update_one({"challenge_id": challenge["challenge_id"]}, {"$set": update})
     challenge.update(update)

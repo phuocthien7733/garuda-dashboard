@@ -4,12 +4,13 @@ services:
     container_name: easm_mongodb_prod
     restart: unless-stopped
     environment:
-      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME}
-      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD}
-      MONGO_INITDB_DATABASE: ${MONGO_DB_NAME}
-      MONGO_DB_NAME: ${MONGO_DB_NAME}
-      MONGO_APP_USERNAME: ${MONGO_APP_USERNAME}
-      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD}
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:?MONGO_ROOT_USERNAME is required}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:?MONGO_ROOT_PASSWORD is required}
+      MONGO_INITDB_DATABASE: ${MONGO_DB_NAME:?MONGO_DB_NAME is required}
+      MONGO_DB_NAME: ${MONGO_DB_NAME:?MONGO_DB_NAME is required}
+      MONGO_APP_USERNAME: ${MONGO_APP_USERNAME:?MONGO_APP_USERNAME is required}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?MONGO_APP_PASSWORD is required}
+      MONGO_SEED_DEFAULT_USERS: ${MONGO_SEED_DEFAULT_USERS:-false}
     volumes:
       - mongo_prod_data:/data/db
       - ./mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
@@ -25,23 +26,25 @@ services:
     env_file:
       - .env.production
     environment:
-      MONGO_DB_NAME: ${MONGO_DB_NAME}
+      MONGO_DB_NAME: ${MONGO_DB_NAME:?MONGO_DB_NAME is required}
       MONGO_HOST: mongodb
       MONGO_PORT: 27017
-      MONGO_USERNAME: ${MONGO_APP_USERNAME}
-      MONGO_PASSWORD: ${MONGO_APP_PASSWORD}
-      MONGO_AUTH_SOURCE: ${MONGO_DB_NAME}
-      JWT_SECRET: ${JWT_SECRET}
-      CORS_ORIGINS: ${CORS_ORIGINS}
-      SMTP_HOST: ${SMTP_HOST}
-      SMTP_PORT: ${SMTP_PORT}
-      SMTP_USERNAME: ${SMTP_USERNAME}
-      SMTP_PASSWORD: ${SMTP_PASSWORD}
-      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL}
-      SMTP_FROM_NAME: ${SMTP_FROM_NAME}
-      SMTP_USE_TLS: ${SMTP_USE_TLS}
-      MFA_CODE_EXPIRATION_MINUTES: ${MFA_CODE_EXPIRATION_MINUTES}
-      MFA_CODE_LENGTH: ${MFA_CODE_LENGTH}
+      MONGO_USERNAME: ${MONGO_APP_USERNAME:?MONGO_APP_USERNAME is required}
+      MONGO_PASSWORD: ${MONGO_APP_PASSWORD:?MONGO_APP_PASSWORD is required}
+      MONGO_AUTH_SOURCE: ${MONGO_DB_NAME:?MONGO_DB_NAME is required}
+      JWT_SECRET: ${JWT_SECRET:?JWT_SECRET is required}
+      CORS_ORIGINS: ${CORS_ORIGINS:?CORS_ORIGINS is required}
+      SMTP_HOST: ${SMTP_HOST:-smtp.gmail.com}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_USERNAME: ${SMTP_USERNAME:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM_EMAIL: ${SMTP_FROM_EMAIL:-}
+      SMTP_FROM_NAME: ${SMTP_FROM_NAME:-Test And Watch Security}
+      SMTP_USE_TLS: ${SMTP_USE_TLS:-true}
+      MFA_CODE_EXPIRATION_MINUTES: ${MFA_CODE_EXPIRATION_MINUTES:-10}
+      MFA_CODE_LENGTH: ${MFA_CODE_LENGTH:-6}
+    volumes:
+      - geoip_data:/app/data/geoip:ro
     depends_on:
       - mongodb
     networks:
@@ -70,16 +73,33 @@ services:
     env_file:
       - .env.production
     environment:
-      MONGO_DB_NAME: ${MONGO_DB_NAME}
+      MONGO_DB_NAME: ${MONGO_DB_NAME:?MONGO_DB_NAME is required}
       MONGO_HOST: mongodb
       MONGO_PORT: 27017
-      MONGO_USERNAME: ${MONGO_APP_USERNAME}
-      MONGO_PASSWORD: ${MONGO_APP_PASSWORD}
-      MONGO_AUTH_SOURCE: ${MONGO_DB_NAME}
+      MONGO_USERNAME: ${MONGO_APP_USERNAME:?MONGO_APP_USERNAME is required}
+      MONGO_PASSWORD: ${MONGO_APP_PASSWORD:?MONGO_APP_PASSWORD is required}
+      MONGO_AUTH_SOURCE: ${MONGO_DB_NAME:?MONGO_DB_NAME is required}
     volumes:
       - ./worker/data:/app/data
     depends_on:
       - mongodb
+    networks:
+      - easm_net
+
+  geoip_updater:
+    build:
+      context: .
+      dockerfile: geoip-updater.Dockerfile
+    container_name: easm_geoip_updater_prod
+    restart: unless-stopped
+    env_file:
+      - .env.production
+    environment:
+      MAXMIND_LICENSE_KEY: ${MAXMIND_LICENSE_KEY:-}
+      GEOIP_UPDATE_CRON: ${GEOIP_UPDATE_CRON:-0 3 * * 4}
+      GEOIP_DIR: /geoip
+    volumes:
+      - geoip_data:/geoip
     networks:
       - easm_net
 
@@ -90,9 +110,11 @@ services:
     depends_on:
       - frontend
       - backend
+    env_file:
+      - .env.production
     environment:
-      DOMAIN: ${DOMAIN}
-      ACME_EMAIL: ${ACME_EMAIL}
+      DOMAIN: ${DOMAIN:?DOMAIN is required}
+      ACME_EMAIL: ${ACME_EMAIL:?ACME_EMAIL is required}
     ports:
       - "80:80"
       - "443:443"
@@ -107,6 +129,7 @@ volumes:
   mongo_prod_data:
   caddy_data:
   caddy_config:
+  geoip_data:
 
 networks:
   easm_net:

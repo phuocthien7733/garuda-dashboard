@@ -43,5 +43,6 @@ async def ensure_indexes() -> None:
     await db.users.create_index([("email", ASCENDING)], unique=True, sparse=True)
     await db.mfa_challenges.create_index([("challenge_id", ASCENDING)], unique=True)
     await db.mfa_challenges.create_index([("expires_at", ASCENDING)], expireAfterSeconds=0)
+    await db.auth_rate_limits.create_index([("expires_at", ASCENDING)], expireAfterSeconds=0)
     await db.revoked_tokens.create_index([("token_id", ASCENDING)], unique=True)
     await db.revoked_tokens.create_index([("expires_at", ASCENDING)], expireAfterSeconds=0)

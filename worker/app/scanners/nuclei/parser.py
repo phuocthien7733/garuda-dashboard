@@ -1,6 +1,9 @@
 import json
+import logging
 from pathlib import Path
 from typing import Iterator
+
+logger = logging.getLogger("ingestion-worker")
 
 
 def detect_input_format(file_path: Path) -> str:
@@ -27,20 +30,23 @@ def _iter_jsonl(file_path: Path) -> Iterator[dict]:
             try:
                 payload = json.loads(line)
             except json.JSONDecodeError as exc:
-                raise ValueError(f"Invalid JSON on line {line_number}: {exc}") from exc
+                logger.warning("Skipping invalid JSON line %s in %s: %s", line_number, file_path.name, exc)
+                continue
             if not isinstance(payload, dict):
-                raise ValueError(f"Expected JSON object on line {line_number}.")
+                logger.warning("Skipping non-object JSON line %s in %s", line_number, file_path.name)
+                continue
             yield payload
 
 
 def iter_raw_findings(file_path: Path) -> Iterator[dict]:
-    payloads: Iterator[dict]
     if detect_input_format(file_path) == "json-array":
-        payloads = iter(_load_json_array(file_path))
-    else:
-        payloads = _iter_jsonl(file_path)
+        raw_payloads = _load_json_array(file_path)
+        for index, payload in enumerate(raw_payloads, start=1):
+            if not isinstance(payload, dict):
+                logger.warning("Skipping non-object JSON item %s in %s", index, file_path.name)
+                continue
+            yield payload
+        return
 
-    for payload in payloads:
-        if not isinstance(payload, dict):
-            raise ValueError("Expected every finding payload to be a JSON object.")
+    for payload in _iter_jsonl(file_path):
         yield payload

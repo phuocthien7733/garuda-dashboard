@@ -4,9 +4,15 @@ services:
     container_name: easm_mongodb
     restart: unless-stopped
     environment:
-      MONGO_INITDB_ROOT_USERNAME: rootadmin
-      MONGO_INITDB_ROOT_PASSWORD: rootpassword_cuc_kho
-      MONGO_INITDB_DATABASE: easm_db
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_ROOT_USERNAME:-rootadmin}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_ROOT_PASSWORD:-rootpassword_cuc_kho}
+      MONGO_INITDB_DATABASE: ${MONGO_DB_NAME:-easm_db}
+      MONGO_DB_NAME: ${MONGO_DB_NAME:-easm_db}
+      MONGO_APP_USERNAME: ${MONGO_APP_USERNAME:-easm_app_user}
+      MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:-SuperSecretPassword123!}
+      MONGO_SEED_DEFAULT_USERS: ${MONGO_SEED_DEFAULT_USERS:-true}
+      MONGO_SEED_ADMIN_USERNAME: ${MONGO_SEED_ADMIN_USERNAME:-administrator}
+      MONGO_SEED_ADMIN_EMAIL: ${MONGO_SEED_ADMIN_EMAIL:-administrator@example.com}
     volumes:
       - ./mongo_data:/data/db
       - ./mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
@@ -23,18 +29,26 @@ services:
     restart: unless-stopped
     volumes:
       - ./backend:/app
+      - geoip_data:/app/data/geoip:ro
     environment:
-      - MONGO_URI=mongodb://easm_app_user:SuperSecretPassword123!@mongodb:27017/easm_db?authSource=easm_db
-      - JWT_SECRET=ThienVuongDoMenh_BiMatTuyeDoi_2026!@#
-      - SMTP_HOST=smtp.gmail.com
-      - SMTP_PORT=587
-      - SMTP_USERNAME=phuocthien7733271@gmail.com
-      - SMTP_PASSWORD=smuntzvqfotgaixq
-      - SMTP_FROM_EMAIL=phuocthien7733271@gmail.com
-      - SMTP_FROM_NAME=T&W Falcon
-      - SMTP_USE_TLS=true
-      - MFA_CODE_EXPIRATION_MINUTES=10
-      - MFA_CODE_LENGTH=6
+      - MONGO_DB_NAME=${MONGO_DB_NAME:-easm_db}
+      - MONGO_HOST=mongodb
+      - MONGO_PORT=27017
+      - MONGO_USERNAME=${MONGO_APP_USERNAME:-easm_app_user}
+      - MONGO_PASSWORD=${MONGO_APP_PASSWORD:-SuperSecretPassword123!}
+      - MONGO_AUTH_SOURCE=${MONGO_DB_NAME:-easm_db}
+      - JWT_SECRET=${JWT_SECRET:-change-me-dev-jwt-secret}
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5173,http://127.0.0.1:5173}
+      - SMTP_HOST=${SMTP_HOST:-smtp.gmail.com}
+      - SMTP_PORT=${SMTP_PORT:-587}
+      - SMTP_USERNAME=${SMTP_USERNAME:-}
+      - SMTP_PASSWORD=${SMTP_PASSWORD:-}
+      - SMTP_FROM_EMAIL=${SMTP_FROM_EMAIL:-}
+      - SMTP_FROM_NAME=${SMTP_FROM_NAME:-T&W Falcon}
+      - SMTP_USE_TLS=${SMTP_USE_TLS:-true}
+      - MFA_CODE_EXPIRATION_MINUTES=${MFA_CODE_EXPIRATION_MINUTES:-10}
+      - MFA_CODE_LENGTH=${MFA_CODE_LENGTH:-6}
+      - MAXMIND_LICENSE_KEY=${MAXMIND_LICENSE_KEY:-}
     ports:
       - "8000:8000"
     depends_on:
@@ -73,11 +87,34 @@ services:
       - ./worker:/app
       - ./worker/data:/app/data
     environment:
-      - MONGO_URI=mongodb://easm_app_user:SuperSecretPassword123!@mongodb:27017/easm_db?authSource=easm_db
+      - MONGO_DB_NAME=${MONGO_DB_NAME:-easm_db}
+      - MONGO_HOST=mongodb
+      - MONGO_PORT=27017
+      - MONGO_USERNAME=${MONGO_APP_USERNAME:-easm_app_user}
+      - MONGO_PASSWORD=${MONGO_APP_PASSWORD:-SuperSecretPassword123!}
+      - MONGO_AUTH_SOURCE=${MONGO_DB_NAME:-easm_db}
     depends_on:
       - mongodb
     networks:
       - easm_net
+
+  geoip_updater:
+    build:
+      context: .
+      dockerfile: geoip-updater.Dockerfile
+    container_name: easm_geoip_updater
+    restart: unless-stopped
+    environment:
+      MAXMIND_LICENSE_KEY: ${MAXMIND_LICENSE_KEY:-}
+      GEOIP_UPDATE_CRON: "0 3 * * 4"
+      GEOIP_DIR: /geoip
+    volumes:
+      - geoip_data:/geoip
+    networks:
+      - easm_net
+
+volumes:
+  geoip_data:
 
 networks:
   easm_net:

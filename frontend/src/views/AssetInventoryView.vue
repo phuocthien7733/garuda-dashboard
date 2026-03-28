@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { useRouter } from "vue-router";
+import { useRoute, useRouter } from "vue-router";
 
 import AppShell from "@/components/layout/AppShell.vue";
 import DatePickerField from "@/components/shared/DatePickerField.vue";
@@ -40,6 +40,7 @@ const TIME_FIELD_OPTIONS = [
 ] as const;
 
 const router = useRouter();
+const route = useRoute();
 
 const loading = ref(false);
 const errorMessage = ref("");
@@ -158,6 +159,14 @@ const totalFiltered = computed(() => totalAssets.value);
 const pageCount = computed(() => Math.max(1, Math.ceil(totalFiltered.value / pageSize.value)));
 const paginatedAssets = computed(() => assets.value);
 
+function hydrateFiltersFromRouteQuery() {
+  const search = String(route.query.search ?? "").trim();
+  if (search) {
+    searchQuery.value = search;
+    debouncedSearchQuery.value = search;
+  }
+}
+
 async function fetchAssetInventory() {
   loading.value = true;
   errorMessage.value = "";
@@ -248,6 +257,7 @@ watch(pageCount, (value) => {
 });
 
 onMounted(() => {
+  hydrateFiltersFromRouteQuery();
   debouncedSearchQuery.value = searchQuery.value;
   void fetchAssetInventory();
 });

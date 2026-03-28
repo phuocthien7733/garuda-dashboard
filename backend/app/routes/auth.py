@@ -1,7 +1,7 @@
 import asyncio
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Request, status
 
 from app.core.rbac import get_current_user
 from app.core.security import create_access_token, hash_password, verify_password
@@ -19,6 +19,7 @@ from app.schemas.auth import (
 )
 from app.services.mailer import send_mfa_email
 from app.services.mfa import issue_mfa_challenge, is_mfa_code_valid, mask_email, refresh_mfa_challenge
+from app.services.rate_limiter import consume_rate_limit, extract_client_ip
 from app.core.config import get_settings
 
 router = APIRouter()
@@ -26,9 +27,27 @@ settings = get_settings()
 
 
 @router.post("/login", response_model=LoginResponse)
-async def login(payload: LoginRequest) -> LoginResponse:
+async def login(payload: LoginRequest, request: Request) -> LoginResponse:
     db = get_database()
-    user = await db.users.find_one({"username": payload.username})
+    normalized_username = payload.username.strip()
+    username = normalized_username.lower()
+    client_ip = extract_client_ip(request)
+    await consume_rate_limit(
+        db,
+        scope="auth-login-ip",
+        identifier=client_ip,
+        limit=settings.auth_login_rate_limit_per_ip,
+        window_seconds=settings.auth_login_rate_limit_window_seconds,
+    )
+    await consume_rate_limit(
+        db,
+        scope="auth-login-username",
+        identifier=username or "empty",
+        limit=settings.auth_login_rate_limit_per_username,
+        window_seconds=settings.auth_login_rate_limit_window_seconds,
+    )
+
+    user = await db.users.find_one({"username": normalized_username})
     if not user or not verify_password(payload.password, user.get("password_hash", "")):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -50,12 +69,12 @@ async def login(payload: LoginRequest) -> LoginResponse:
                 detail="MFA is enabled for this account, but no email is configured.",
             )
 
-        challenge, otp_code = await issue_mfa_challenge(db, payload.username, email)
+        challenge, otp_code = await issue_mfa_challenge(db, normalized_username, email)
         try:
             await asyncio.to_thread(
                 send_mfa_email,
                 email,
-                payload.username,
+                normalized_username,
                 otp_code,
                 settings.mfa_code_expiration_minutes,
             )
@@ -73,7 +92,7 @@ async def login(payload: LoginRequest) -> LoginResponse:
             ) from exc
 
         return LoginResponse(
-            username=payload.username,
+            username=normalized_username,
             email=email,
             mfa_required=True,
             challenge_id=challenge["challenge_id"],
@@ -81,10 +100,10 @@ async def login(payload: LoginRequest) -> LoginResponse:
             masked_email=mask_email(email),
         )
 
-    token = create_access_token(payload.username, role)
+    token = create_access_token(normalized_username, role)
     return LoginResponse(
         access_token=token,
-        username=payload.username,
+        username=normalized_username,
         role=role,
         email=email,
     )
@@ -195,8 +214,17 @@ async def update_profile(
 
 
 @router.post("/mfa/verify", response_model=TokenResponse)
-async def verify_mfa(payload: MfaVerifyRequest) -> TokenResponse:
+async def verify_mfa(payload: MfaVerifyRequest, request: Request) -> TokenResponse:
     db = get_database()
+    client_ip = extract_client_ip(request)
+    await consume_rate_limit(
+        db,
+        scope="auth-mfa-verify-ip",
+        identifier=client_ip,
+        limit=settings.auth_mfa_verify_rate_limit_per_ip,
+        window_seconds=settings.auth_mfa_verify_rate_limit_window_seconds,
+    )
+
     challenge = await db.mfa_challenges.find_one({"challenge_id": payload.challenge_id})
     if not challenge:
         raise HTTPException(
@@ -205,6 +233,14 @@ async def verify_mfa(payload: MfaVerifyRequest) -> TokenResponse:
         )
 
     if not is_mfa_code_valid(challenge, payload.code.strip()):
+        failed_attempts = int(challenge.get("failed_attempts", 0)) + 1
+        if failed_attempts >= settings.mfa_verify_max_attempts:
+            await db.mfa_challenges.delete_one({"challenge_id": payload.challenge_id})
+        else:
+            await db.mfa_challenges.update_one(
+                {"challenge_id": payload.challenge_id},
+                {"$set": {"failed_attempts": failed_attempts}},
+            )
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid or expired MFA code.",
@@ -231,14 +267,38 @@ async def verify_mfa(payload: MfaVerifyRequest) -> TokenResponse:
 
 
 @router.post("/mfa/resend", response_model=MfaChallengeResponse)
-async def resend_mfa(payload: MfaResendRequest) -> MfaChallengeResponse:
+async def resend_mfa(payload: MfaResendRequest, request: Request) -> MfaChallengeResponse:
     db = get_database()
+    client_ip = extract_client_ip(request)
+    await consume_rate_limit(
+        db,
+        scope="auth-mfa-resend-ip",
+        identifier=client_ip,
+        limit=settings.auth_mfa_resend_rate_limit_per_ip,
+        window_seconds=settings.auth_mfa_resend_rate_limit_window_seconds,
+    )
+
     challenge = await db.mfa_challenges.find_one({"challenge_id": payload.challenge_id})
     if not challenge:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail="MFA challenge not found or already expired.",
         )
+
+    now = datetime.now(timezone.utc)
+    last_sent_at = challenge.get("last_sent_at") or challenge.get("created_at")
+    if isinstance(last_sent_at, datetime):
+        if last_sent_at.tzinfo is None:
+            last_sent_at = last_sent_at.replace(tzinfo=timezone.utc)
+        cooldown_seconds = max(0, settings.mfa_resend_cooldown_seconds)
+        elapsed = (now - last_sent_at).total_seconds()
+        if cooldown_seconds and elapsed < cooldown_seconds:
+            retry_after = int(cooldown_seconds - elapsed) + 1
+            raise HTTPException(
+                status_code=status.HTTP_429_TOO_MANY_REQUESTS,
+                detail="Please wait before requesting another MFA code.",
+                headers={"Retry-After": str(max(1, retry_after))},
+            )
 
     challenge, otp_code = await refresh_mfa_challenge(db, challenge)
     try:

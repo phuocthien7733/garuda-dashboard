@@ -1,6 +1,7 @@
 from datetime import datetime, timedelta, timezone
 
 SEVERITIES = ["critical", "high", "medium", "low", "info"]
+SNAPSHOT_STATE_ID = "state"
 
 
 def _coerce_utc(value):
@@ -11,7 +12,7 @@ def _coerce_utc(value):
     return None
 
 
-async def get_snapshot_payload(db, key: str, max_age_seconds: int):
+async def get_snapshot_payload(db, key: str, max_age_seconds: int, allow_stale: bool = False):
     document = await db.dashboard_snapshots.find_one({"_id": key})
     if not document:
         return None
@@ -21,23 +22,38 @@ async def get_snapshot_payload(db, key: str, max_age_seconds: int):
         return None
 
     age_seconds = (datetime.now(timezone.utc) - generated_at).total_seconds()
-    if age_seconds > max(1, max_age_seconds):
+    is_stale = age_seconds > max(1, max_age_seconds)
+    if is_stale and not allow_stale:
         return None
 
     return {
         "payload": document.get("payload"),
         "generated_at": generated_at,
+        "is_stale": is_stale,
     }
 
 
 async def build_live_stats(db):
-    open_severity_distribution = {
-        severity: await db.vulnerabilities.count_documents({"status": "Open", "severity": severity})
-        for severity in SEVERITIES
-    }
+    pipeline = [
+        {"$match": {"status": "Open"}},
+        {
+            "$addFields": {
+                "effective_severity": {"$toLower": {"$ifNull": ["$override_severity", "$severity"]}},
+            }
+        },
+        {"$match": {"effective_severity": {"$in": SEVERITIES}}},
+        {"$group": {"_id": "$effective_severity", "count": {"$sum": 1}}},
+    ]
+    results = await db.vulnerabilities.aggregate(pipeline).to_list(length=None)
+    open_severity_distribution = {severity: 0 for severity in SEVERITIES}
+    for document in results:
+        severity = str(document.get("_id", "")).lower()
+        if severity in open_severity_distribution:
+            open_severity_distribution[severity] = int(document.get("count", 0) or 0)
+
     return {
         "assets": await db.assets.count_documents({}),
-        "open_vulnerabilities": await db.vulnerabilities.count_documents({"status": "Open"}),
+        "open_vulnerabilities": sum(open_severity_distribution.values()),
         "critical_vulnerabilities": open_severity_distribution["critical"],
         "high_vulnerabilities": open_severity_distribution["high"],
         "medium_vulnerabilities": open_severity_distribution["medium"],
@@ -52,7 +68,13 @@ async def build_live_trend(db, days: int):
     start_date = (now - timedelta(days=days - 1)).replace(hour=0, minute=0, second=0, microsecond=0)
 
     pipeline = [
-        {"$match": {"first_seen": {"$gte": start_date}, "severity": {"$in": SEVERITIES}}},
+        {"$match": {"first_seen": {"$gte": start_date}}},
+        {
+            "$addFields": {
+                "effective_severity": {"$toLower": {"$ifNull": ["$override_severity", "$severity"]}},
+            }
+        },
+        {"$match": {"effective_severity": {"$in": SEVERITIES}}},
         {
             "$project": {
                 "date": {
@@ -61,7 +83,7 @@ async def build_live_trend(db, days: int):
                         "date": "$first_seen",
                     }
                 },
-                "severity": "$severity",
+                "severity": "$effective_severity",
             }
         },
         {
@@ -95,8 +117,13 @@ async def build_live_trend(db, days: int):
 async def build_live_tech_stack(db, limit: int = 40):
     pipeline = [
         {
+            "$addFields": {
+                "effective_severity": {"$toLower": {"$ifNull": ["$override_severity", "$severity"]}},
+            }
+        },
+        {
             "$match": {
-                "severity": "info",
+                "effective_severity": "info",
                 "host": {"$exists": True, "$ne": None},
                 "name": {"$exists": True, "$ne": None},
                 "status": "Open",
@@ -108,3 +135,38 @@ async def build_live_tech_stack(db, limit: int = 40):
         {"$limit": limit},
     ]
     return await db.vulnerabilities.aggregate(pipeline).to_list(length=limit)
+
+
+async def mark_dashboard_snapshot_dirty(db, source: str) -> None:
+    now = datetime.now(timezone.utc)
+    await db.dashboard_snapshot_state.update_one(
+        {"_id": SNAPSHOT_STATE_ID},
+        {
+            "$set": {
+                "dirty": True,
+                "last_dirty_at": now,
+                "last_dirty_source": source,
+            },
+            "$setOnInsert": {"created_at": now},
+        },
+        upsert=True,
+    )
+
+
+async def clear_dashboard_snapshot_dirty(db) -> None:
+    now = datetime.now(timezone.utc)
+    await db.dashboard_snapshot_state.update_one(
+        {"_id": SNAPSHOT_STATE_ID},
+        {
+            "$set": {
+                "dirty": False,
+                "last_refreshed_at": now,
+            }
+        },
+        upsert=True,
+    )
+
+
+async def is_dashboard_snapshot_dirty(db) -> bool:
+    document = await db.dashboard_snapshot_state.find_one({"_id": SNAPSHOT_STATE_ID}, {"dirty": 1})
+    return bool(document and document.get("dirty"))

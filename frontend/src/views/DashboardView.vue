@@ -3,6 +3,7 @@ import * as echarts from "echarts";
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 
+import PewPewThreatMap from "@/components/assets/PewPewThreatMap.vue";
 import AppShell from "@/components/layout/AppShell.vue";
 import api from "@/services/api";
 import { useAuthStore } from "@/stores/auth";
@@ -139,6 +140,15 @@ const severityPalette = {
   low: "#389e0d",
   info: "#096dd9",
 };
+
+function topAssetBarColor() {
+  const selected = selectedAssetSeverity.value;
+  if (selected !== "all") {
+    return severityPalette[selected];
+  }
+
+  return "#ff4d6d";
+}
 
 function renderSeverityChart() {
   if (!chartElement.value) {
@@ -806,16 +816,7 @@ watch(selectedAssetSeverity, () => {
                           class="h-full rounded-full"
                           :style="{
                             width: `${(asset.count / topAssetMaxCount) * 100}%`,
-                            backgroundColor:
-                              asset.highest_severity === 'critical'
-                                ? '#ff0308ff'
-                                : asset.highest_severity === 'high'
-                                  ? '#f36d14ff'
-                                  : asset.highest_severity === 'medium'
-                                    ? '#ffe240ff'
-                                    : asset.highest_severity === 'low'
-                                      ? '#389e0d'
-                                      : '#096dd9',
+                            backgroundColor: topAssetBarColor(),
                           }"
                         />
                       </div>
@@ -854,5 +855,7 @@ watch(selectedAssetSeverity, () => {
             </div>
           </div>
         </section>
+
+        <PewPewThreatMap />
   </AppShell>
 </template>

@@ -26,9 +26,21 @@ class Settings(BaseSettings):
     smtp_use_tls: bool = True
     mfa_code_expiration_minutes: int = 10
     mfa_code_length: int = 6
+    mfa_verify_max_attempts: int = 5
+    mfa_resend_cooldown_seconds: int = 60
+    auth_login_rate_limit_per_ip: int = 20
+    auth_login_rate_limit_per_username: int = 10
+    auth_login_rate_limit_window_seconds: int = 300
+    auth_mfa_verify_rate_limit_per_ip: int = 20
+    auth_mfa_verify_rate_limit_window_seconds: int = 300
+    auth_mfa_resend_rate_limit_per_ip: int = 10
+    auth_mfa_resend_rate_limit_window_seconds: int = 300
+    search_query_max_length: int = 120
     cors_origins: str = ""
-    dashboard_snapshot_max_age_seconds: int = 180
+    dashboard_snapshot_max_age_seconds: int = 60
     vulnerability_archive_retention_days: int = 730
+    geoip_city_db_path: str = "/app/data/geoip/GeoLite2-City.mmdb"
+    geoip_asn_db_path: str = "/app/data/geoip/GeoLite2-ASN.mmdb"
 
     model_config = SettingsConfigDict(
         env_file=".env",

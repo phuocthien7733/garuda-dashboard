@@ -2,6 +2,7 @@ import asyncio
 import base64
 from datetime import datetime, timezone
 import json
+import re
 
 from fastapi import APIRouter, Depends, Query
 from fastapi.encoders import jsonable_encoder
@@ -9,6 +10,7 @@ from fastapi.exceptions import HTTPException
 from bson import ObjectId
 from pymongo import DESCENDING
 
+from app.core.config import get_settings
 from app.core.rbac import require_role
 from app.db.mongo import get_database
 from app.schemas.auth import CurrentUser
@@ -19,8 +21,10 @@ from app.schemas.vulnerability import (
     VulnerabilityPatchRequest,
 )
 from app.services.assets_inventory import recalculate_asset
+from app.services.dashboard_snapshots import mark_dashboard_snapshot_dirty
 
 router = APIRouter()
+settings = get_settings()
 
 
 def _serialize_vulnerability(document: dict) -> dict:
@@ -76,6 +80,24 @@ def _parse_date_boundary(value: str | None, boundary: str) -> datetime | None:
         raise HTTPException(status_code=422, detail=f"Invalid date value: {value}") from exc
 
 
+def _sanitize_search_query(search: str | None) -> str | None:
+    if not search:
+        return None
+
+    normalized = search.strip()
+    if not normalized:
+        return None
+
+    max_length = max(1, int(settings.search_query_max_length))
+    if len(normalized) > max_length:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Search query is too long (max {max_length} characters).",
+        )
+
+    return re.escape(normalized)
+
+
 async def _list_vulnerabilities_internal(
     *,
     include_archive: bool,
@@ -92,27 +114,33 @@ async def _list_vulnerabilities_internal(
 ) -> VulnerabilityListResponse:
     db = get_database()
     collection = db.vulnerabilities_archive if include_archive else db.vulnerabilities
+    safe_search = _sanitize_search_query(search)
 
-    query: dict[str, object] = {}
+    conditions: list[dict[str, object]] = []
     if severity:
-        query["severity"] = severity.strip().lower()
+        normalized_severity = severity.strip().lower()
+        conditions.append({"$or": [{"override_severity": normalized_severity}, {"severity": normalized_severity}]})
     if status_filter:
-        query["status"] = status_filter
+        conditions.append({"status": status_filter})
     if include_archive and archived_reason:
-        query["archived_reason"] = archived_reason.strip()
+        conditions.append({"archived_reason": archived_reason.strip()})
 
     if port:
         normalized_port = port.strip()
         if normalized_port:
-            query["port"] = normalized_port
+            conditions.append({"port": normalized_port})
 
-    if search:
-        query["$or"] = [
-            {"host": {"$regex": search, "$options": "i"}},
-            {"name": {"$regex": search, "$options": "i"}},
-            {"template_id": {"$regex": search, "$options": "i"}},
-            {"template-id": {"$regex": search, "$options": "i"}},
-        ]
+    if safe_search:
+        conditions.append(
+            {
+                "$or": [
+                    {"host": {"$regex": safe_search, "$options": "i"}},
+                    {"name": {"$regex": safe_search, "$options": "i"}},
+                    {"template_id": {"$regex": safe_search, "$options": "i"}},
+                    {"template-id": {"$regex": safe_search, "$options": "i"}},
+                ]
+            }
+        )
 
     normalized_time_field = (time_field or "last_seen").strip()
     if normalized_time_field not in {"first_seen", "last_seen"}:
@@ -126,7 +154,14 @@ async def _list_vulnerabilities_internal(
             time_filter["$gte"] = from_boundary
         if to_boundary:
             time_filter["$lte"] = to_boundary
-        query[normalized_time_field] = time_filter
+        conditions.append({normalized_time_field: time_filter})
+
+    if not conditions:
+        query: dict[str, object] = {}
+    elif len(conditions) == 1:
+        query = conditions[0]
+    else:
+        query = {"$and": conditions}
 
     cursor_filter = None
     if cursor:
@@ -285,7 +320,15 @@ async def list_archived_vulnerabilities(
 @router.get("/vulns/recent")
 async def recent_high_priority(_: CurrentUser = Depends(require_role("admin", "viewer"))):
     db = get_database()
-    query = {"severity": {"$in": ["high", "critical"]}}
+    query = {
+        "status": "Open",
+        "$expr": {
+            "$in": [
+                {"$toLower": {"$ifNull": ["$override_severity", "$severity"]}},
+                ["high", "critical"],
+            ]
+        },
+    }
     cursor = db.vulnerabilities.find(query).sort("last_seen", DESCENDING).limit(10)
     return [_serialize_vulnerability(document) async for document in cursor]
 
@@ -311,6 +354,7 @@ async def patch_vulnerability(
     host = existing_vulnerability.get("host")
     if host:
         await recalculate_asset(db, str(host))
+    await mark_dashboard_snapshot_dirty(db, "vulnerability-patch")
 
     return {"updated": True}
 
@@ -344,6 +388,7 @@ async def archive_vulnerability(
     host = archived.get("host")
     if host:
         await recalculate_asset(db, str(host))
+    await mark_dashboard_snapshot_dirty(db, "vulnerability-archive")
 
     return {"archived": True}
 
@@ -378,6 +423,7 @@ async def bulk_patch_vulnerabilities(
     affected_hosts = sorted({str(item.get("host")) for item in matched_vulnerabilities if item.get("host")})
     for host in affected_hosts:
         await recalculate_asset(db, host)
+    await mark_dashboard_snapshot_dirty(db, "vulnerability-bulk-triage")
 
     return {
         "updated": True,
@@ -416,6 +462,7 @@ async def restore_archived_vulnerability(
     host = restored.get("host")
     if host:
         await recalculate_asset(db, str(host))
+    await mark_dashboard_snapshot_dirty(db, "vulnerability-restore")
 
     return {"restored": True}
 
@@ -489,6 +536,7 @@ async def restore_archived_vulnerabilities_bulk(
 
     for host in sorted(host_set):
         await recalculate_asset(db, host)
+    await mark_dashboard_snapshot_dirty(db, "vulnerability-restore-bulk")
 
     return {
         "restored": True,

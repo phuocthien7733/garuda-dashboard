@@ -1,4 +1,6 @@
 import asyncio
+from datetime import datetime, timezone
+import json
 import logging
 import shutil
 import time
@@ -9,7 +11,7 @@ from watchdog.observers.polling import PollingObserver
 
 from app.config import get_settings
 from app.archive import archive_stale_vulnerabilities, purge_expired_archived_vulnerabilities
-from app.db import close_database, ensure_indexes
+from app.db import close_database, ensure_indexes, get_database
 from app.scanners import get_scanner_folders, get_scanner_for_file
 from app.snapshots import recompute_dashboard_snapshots
 
@@ -22,8 +24,10 @@ logger = logging.getLogger("ingestion-worker")
 settings = get_settings()
 incoming_dir = Path(settings.incoming_dir)
 archive_dir = Path(settings.archive_dir)
+quarantine_dir = Path(settings.quarantine_dir)
 processing_files: set[Path] = set()
 queued_files: set[Path] = set()
+failed_attempts: dict[Path, int] = {}
 file_queue: asyncio.Queue[Path] = asyncio.Queue()
 event_loop: asyncio.AbstractEventLoop | None = None
 
@@ -50,6 +54,48 @@ def _build_archive_path(file_path: Path) -> Path:
 
     timestamp = int(time.time())
     return candidate.with_name(f"{candidate.stem}_{timestamp}{candidate.suffix}")
+
+
+def _build_quarantine_path(file_path: Path) -> Path:
+    relative_path = file_path.relative_to(incoming_dir)
+    candidate = quarantine_dir / relative_path
+    candidate.parent.mkdir(parents=True, exist_ok=True)
+    if not candidate.exists():
+        return candidate
+
+    timestamp = int(time.time())
+    return candidate.with_name(f"{candidate.stem}_{timestamp}{candidate.suffix}")
+
+
+def _write_quarantine_report(target_path: Path, error: Exception, attempts: int, reason: str) -> None:
+    report_path = target_path.with_suffix(f"{target_path.suffix}.error.json")
+    report = {
+        "reason": reason,
+        "error_type": type(error).__name__,
+        "error_message": str(error),
+        "attempts": attempts,
+        "quarantined_at": datetime.now(timezone.utc).isoformat(),
+    }
+    report_path.write_text(json.dumps(report, ensure_ascii=True, indent=2), encoding="utf-8")
+
+
+def _quarantine_file(file_path: Path, error: Exception, attempts: int, reason: str) -> None:
+    if not file_path.exists():
+        return
+    try:
+        target_path = _build_quarantine_path(file_path)
+        shutil.move(str(file_path), target_path)
+        _write_quarantine_report(target_path, error, attempts, reason)
+        logger.error(
+            "Quarantined %s to %s | reason=%s attempts=%s error=%s",
+            file_path.relative_to(incoming_dir),
+            target_path.relative_to(quarantine_dir),
+            reason,
+            attempts,
+            type(error).__name__,
+        )
+    except Exception:
+        logger.exception("Failed to quarantine %s after processing error", file_path.name)
 
 
 def _schedule_file_processing(file_path: Path) -> None:
@@ -102,6 +148,7 @@ async def handle_file(file_path: Path) -> bool:
         summary = await scanner.process_file(file_path)
         target_path = _build_archive_path(file_path)
         shutil.move(str(file_path), target_path)
+        failed_attempts.pop(file_path, None)
         logger.info(
             "Archived %s to %s | processed=%s inserted=%s updated=%s skipped=%s resolved=%s assets=%s",
             file_path.relative_to(incoming_dir),
@@ -114,8 +161,26 @@ async def handle_file(file_path: Path) -> bool:
             summary.assets_updated,
         )
         return summary.processed > 0
-    except Exception:
-        logger.exception("Failed processing %s", file_path.name)
+    except Exception as exc:
+        attempts = failed_attempts.get(file_path, 0) + 1
+        failed_attempts[file_path] = attempts
+
+        if isinstance(exc, ValueError):
+            _quarantine_file(file_path, exc, attempts, "invalid-input")
+            failed_attempts.pop(file_path, None)
+            return False
+
+        if attempts >= settings.ingest_max_retries:
+            _quarantine_file(file_path, exc, attempts, "max-retries-exceeded")
+            failed_attempts.pop(file_path, None)
+            return False
+
+        logger.exception(
+            "Failed processing %s (attempt %s/%s). Will retry.",
+            file_path.name,
+            attempts,
+            settings.ingest_max_retries,
+        )
         return False
     finally:
         processing_files.discard(file_path)
@@ -141,15 +206,24 @@ async def queue_consumer(name: str, snapshot_dirty_ref: dict[str, bool]) -> None
 async def main_async() -> None:
     incoming_dir.mkdir(parents=True, exist_ok=True)
     archive_dir.mkdir(parents=True, exist_ok=True)
+    quarantine_dir.mkdir(parents=True, exist_ok=True)
     for scanner_folder in get_scanner_folders():
         (incoming_dir / scanner_folder).mkdir(parents=True, exist_ok=True)
         (archive_dir / scanner_folder).mkdir(parents=True, exist_ok=True)
-    logger.info("Worker bootstrap ready | incoming=%s archive=%s", incoming_dir, archive_dir)
+        (quarantine_dir / scanner_folder).mkdir(parents=True, exist_ok=True)
+    logger.info(
+        "Worker bootstrap ready | incoming=%s archive=%s quarantine=%s",
+        incoming_dir,
+        archive_dir,
+        quarantine_dir,
+    )
     await ensure_indexes()
     await process_existing_files()
     last_archive_sweep = 0.0
     last_snapshot_refresh = 0.0
+    last_snapshot_state_check = 0.0
     snapshot_state = {"dirty": True}
+    db = get_database()
 
     observer = PollingObserver(timeout=1)
     observer.schedule(IncomingFileHandler(), str(incoming_dir), recursive=True)
@@ -165,6 +239,16 @@ async def main_async() -> None:
         while True:
             await process_existing_files()
             now_monotonic = time.monotonic()
+            if not snapshot_state["dirty"] and now_monotonic - last_snapshot_state_check >= 5:
+                try:
+                    state_document = await db.dashboard_snapshot_state.find_one({"_id": "state"}, {"dirty": 1})
+                    if state_document and state_document.get("dirty"):
+                        snapshot_state["dirty"] = True
+                except Exception:
+                    logger.exception("Snapshot dirty-state check failed")
+                finally:
+                    last_snapshot_state_check = now_monotonic
+
             if (
                 now_monotonic - last_archive_sweep
                 >= settings.vulnerability_archive_sweep_interval_seconds

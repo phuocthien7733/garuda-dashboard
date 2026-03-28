@@ -1,3 +1,38 @@
 mongo_data/
-.env.production
+
+# Environment files
 .env
+.env.*
+!.env.production.example
+
+# Python cache/artifacts
+**/__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+
+# Node/Vite artifacts
+frontend/node_modules/
+frontend/dist/
+
+# Worker runtime data
+worker/data/*.json
+worker/data/archive/**
+worker/data/incoming/**
+worker/data/quarantine/**
+!worker/data/archive/
+!worker/data/archive/nuclei/
+!worker/data/incoming/
+!worker/data/incoming/nuclei/
+!worker/data/quarantine/
+!worker/data/quarantine/nuclei/
+!worker/data/incoming/.gitkeep
+!worker/data/incoming/nuclei/.gitkeep
+!worker/data/archive/.gitkeep
+!worker/data/archive/nuclei/.gitkeep
+!worker/data/quarantine/.gitkeep
+!worker/data/quarantine/nuclei/.gitkeep
+
+# OS/editor
+.DS_Store
+Thumbs.db

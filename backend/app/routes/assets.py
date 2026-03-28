@@ -8,6 +8,7 @@ from bson import ObjectId
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.encoders import jsonable_encoder
 
+from app.core.config import get_settings
 from app.core.rbac import require_role
 from app.db.mongo import get_database
 from app.schemas.asset import (
@@ -19,8 +20,10 @@ from app.schemas.asset import (
 )
 from app.schemas.auth import CurrentUser
 from app.services.assets_inventory import ensure_asset_inventory, recalculate_asset
+from app.services.dashboard_snapshots import mark_dashboard_snapshot_dirty
 
 router = APIRouter()
+settings = get_settings()
 VALID_SEVERITIES = {"critical", "high", "medium", "low", "info"}
 MAX_NETWORK_NEIGHBORS = 36
 MAX_NETWORK_IP_NODES = 12
@@ -51,6 +54,24 @@ def _parse_date_boundary(value: str | None, boundary: str) -> datetime | None:
         return datetime.fromisoformat(f"{value}T23:59:59.999000+00:00")
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=f"Invalid date value: {value}") from exc
+
+
+def _sanitize_search_query(search: str | None) -> str | None:
+    if not search:
+        return None
+
+    normalized = search.strip()
+    if not normalized:
+        return None
+
+    max_length = max(1, int(settings.search_query_max_length))
+    if len(normalized) > max_length:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Search query is too long (max {max_length} characters).",
+        )
+
+    return re.escape(normalized)
 
 
 def _parse_cursor_datetime(value: object) -> datetime:
@@ -224,13 +245,14 @@ async def list_assets(
     db = get_database()
     await ensure_asset_inventory(db)
 
+    safe_search = _sanitize_search_query(search)
     query: dict[str, object] = {}
-    if search:
+    if safe_search:
         query["$or"] = [
-            {"host": {"$regex": search, "$options": "i"}},
-            {"ip_addresses": {"$elemMatch": {"$regex": search, "$options": "i"}}},
-            {"services": {"$elemMatch": {"$regex": search, "$options": "i"}}},
-            {"template_ids": {"$elemMatch": {"$regex": search, "$options": "i"}}},
+            {"host": {"$regex": safe_search, "$options": "i"}},
+            {"ip_addresses": {"$elemMatch": {"$regex": safe_search, "$options": "i"}}},
+            {"services": {"$elemMatch": {"$regex": safe_search, "$options": "i"}}},
+            {"template_ids": {"$elemMatch": {"$regex": safe_search, "$options": "i"}}},
         ]
     if severity:
         normalized_severity = severity.strip().lower()
@@ -307,6 +329,7 @@ async def get_asset_vulnerabilities(
 ):
     db, asset = await _get_asset_by_id(asset_id)
     host = asset.get("host")
+    safe_search = _sanitize_search_query(search)
 
     query: dict[str, object] = {"host": host}
     if severity:
@@ -320,16 +343,16 @@ async def get_asset_vulnerabilities(
         normalized_port = port.strip()
         if normalized_port:
             query["port"] = normalized_port
-    if search:
+    if safe_search:
         query["$and"] = [
             {
                 "$or": [
-                    {"name": {"$regex": search, "$options": "i"}},
-                    {"host": {"$regex": search, "$options": "i"}},
-                    {"ip": {"$regex": search, "$options": "i"}},
-                    {"template_id": {"$regex": search, "$options": "i"}},
-                    {"template-id": {"$regex": search, "$options": "i"}},
-                    {"port": {"$regex": search, "$options": "i"}},
+                    {"name": {"$regex": safe_search, "$options": "i"}},
+                    {"host": {"$regex": safe_search, "$options": "i"}},
+                    {"ip": {"$regex": safe_search, "$options": "i"}},
+                    {"template_id": {"$regex": safe_search, "$options": "i"}},
+                    {"template-id": {"$regex": safe_search, "$options": "i"}},
+                    {"port": {"$regex": safe_search, "$options": "i"}},
                 ]
             }
         ]
@@ -615,6 +638,7 @@ async def bulk_triage_assets(
 
     for host in hosts:
         await recalculate_asset(db, host)
+    await mark_dashboard_snapshot_dirty(db, "asset-bulk-triage")
 
     return {
         "updated": True,
@@ -631,31 +655,33 @@ async def top_assets(
     db = get_database()
     await ensure_asset_inventory(db)
     normalized_severity = severity.lower()
-    match_stage: dict[str, object] = {"status": "Open"}
-
-    if normalized_severity != "all":
-        if normalized_severity not in VALID_SEVERITIES:
-            return []
-        match_stage["severity"] = normalized_severity
+    if normalized_severity != "all" and normalized_severity not in VALID_SEVERITIES:
+        return []
 
     pipeline = [
-        {"$match": match_stage},
+        {"$match": {"status": "Open"}},
         {
             "$addFields": {
+                "effective_severity": {"$toLower": {"$ifNull": ["$override_severity", "$severity"]}},
                 "severity_rank": {
                     "$switch": {
                         "branches": [
-                            {"case": {"$eq": ["$severity", "critical"]}, "then": 5},
-                            {"case": {"$eq": ["$severity", "high"]}, "then": 4},
-                            {"case": {"$eq": ["$severity", "medium"]}, "then": 3},
-                            {"case": {"$eq": ["$severity", "low"]}, "then": 2},
-                            {"case": {"$eq": ["$severity", "info"]}, "then": 1},
+                            {"case": {"$eq": ["$effective_severity", "critical"]}, "then": 5},
+                            {"case": {"$eq": ["$effective_severity", "high"]}, "then": 4},
+                            {"case": {"$eq": ["$effective_severity", "medium"]}, "then": 3},
+                            {"case": {"$eq": ["$effective_severity", "low"]}, "then": 2},
+                            {"case": {"$eq": ["$effective_severity", "info"]}, "then": 1},
                         ],
                         "default": 0,
                     }
                 }
             }
         },
+    ]
+    if normalized_severity != "all":
+        pipeline.append({"$match": {"effective_severity": normalized_severity}})
+    pipeline.extend(
+        [
         {
             "$group": {
                 "_id": "$host",
@@ -665,7 +691,8 @@ async def top_assets(
         },
         {"$sort": {"count": -1, "_id": 1}},
         {"$limit": 5},
-    ]
+        ]
+    )
 
     results = await db.vulnerabilities.aggregate(pipeline).to_list(length=5)
     enriched_results = []

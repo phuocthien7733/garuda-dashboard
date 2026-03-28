@@ -98,11 +98,11 @@ const categoryStyles: Record<string, CategoryStyle> = {
 
 function escapeHtml(value: unknown) {
   return String(value ?? "--")
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#39;");
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 function truncateLabel(value: string) {
@@ -259,10 +259,16 @@ function renderChart(payload: NetworkResponse) {
       padding: 0,
       backgroundColor: "transparent",
       formatter: tooltipFormatter,
-      position(point, _params, _dom, _rect, size) {
-        const [mouseX, mouseY] = point as number[];
-        const [contentWidth, contentHeight] = size.contentSize as number[];
-        const [viewWidth, viewHeight] = size.viewSize as number[];
+      position(
+        point: number[],
+        _params: unknown,
+        _dom: unknown,
+        _rect: unknown,
+        size: { contentSize: number[]; viewSize: number[] }
+      ) {
+        const [mouseX, mouseY] = point;
+        const [contentWidth, contentHeight] = size.contentSize;
+        const [viewWidth, viewHeight] = size.viewSize;
         const offsetX = 22;
         const offsetY = 18;
 
