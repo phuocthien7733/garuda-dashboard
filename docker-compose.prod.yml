@@ -10,7 +10,7 @@ services:
       MONGO_DB_NAME: ${MONGO_DB_NAME:?MONGO_DB_NAME is required}
       MONGO_APP_USERNAME: ${MONGO_APP_USERNAME:?MONGO_APP_USERNAME is required}
       MONGO_APP_PASSWORD: ${MONGO_APP_PASSWORD:?MONGO_APP_PASSWORD is required}
-      MONGO_SEED_DEFAULT_USERS: ${MONGO_SEED_DEFAULT_USERS:-false}
+      MONGO_SEED_DEFAULT_USERS: ${MONGO_SEED_DEFAULT_USERS:-true}
     volumes:
       - mongo_prod_data:/data/db
       - ./mongo-init.js:/docker-entrypoint-initdb.d/mongo-init.js:ro
