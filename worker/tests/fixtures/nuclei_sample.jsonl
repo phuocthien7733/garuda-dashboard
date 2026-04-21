@@ -1,0 +1,3 @@
+{"template-id": "cve-2023-46805", "info": {"name": "Ivanti ICS - Auth Bypass", "severity": "high", "tags": ["cve", "cve2023", "auth-bypass"]}, "host": "vpn.example.com", "matched-at": "https://vpn.example.com/api/v1/totp/user-verify", "extracted-results": []}
+{"template-id": "sqli-error-based", "info": {"name": "Error Based SQL Injection", "severity": "high", "tags": ["sqli", "dast"]}, "host": "shop.example.com", "matched-at": "https://shop.example.com/products?id=1'", "extracted-results": ["SQL syntax error"]}
+{"template-id": "http-missing-security-headers", "info": {"name": "HTTP Missing Security Headers", "severity": "info", "tags": ["misconfig", "headers"]}, "host": "www.example.com", "matched-at": "https://www.example.com/", "extracted-results": []}

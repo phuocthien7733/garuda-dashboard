@@ -1,0 +1,105 @@
+scanner: invicti
+finding_type_default: vulnerability
+
+input:
+  format: json_object   # root is a single object, not an array
+
+# Structural fingerprint — validated BEFORE extraction
+# Invicti: root is { "export": { "scans": [...] } }
+input_validation:
+  required_paths:
+    - "$.export.scans[0].info.host"       # every Invicti export has a host in scan info
+    - "$.export.scans[0].vulnerability_types"  # vulnerability_types array must exist
+  forbidden_paths:
+    - "$[0].template-id"    # would indicate Nuclei
+    - "$.issue_events"      # would indicate Burp Suite
+
+extraction:
+  mode: nested_join
+  findings_path: "$.export.scans[*].vulnerability_types[*]"
+  lookups:
+    location:
+      source_path: "$.export.scans[*].locations[*]"
+      key_field:   "loc_id"
+      join_on:     "$.loc_id"
+    vuln_detail:
+      # vulnerabilities[*].info has request/response/details per vt_id+loc_id
+      source_path: "$.export.scans[*].vulnerabilities[*].info"
+      compound_key_fields: ["vt_id", "loc_id"]
+      compound_join_on:   ["$.vt_id", "$.loc_id"]
+  context_inject:
+    scan_host:  "$.export.scans[0].info.host"
+    scan_start: "$.export.scans[0].info.start_date"
+
+finding_type_rules:
+  - if_tag_contains: ["ssl", "tls", "weak_crypto"]
+    set_type: ssl_finding
+  - if_tag_contains: ["information_disclosure"]
+    set_type: exposure
+  - if_category_equals: ["configuration"]
+    set_type: misconfiguration
+  - if_tag_contains: ["llm"]
+    set_type: vulnerability
+  - default: vulnerability
+
+required_fields:
+  - target.hostname
+  - identity.standardized_rule_id
+  - severity
+
+evidence_limits:
+  max_response_size_kb: 512
+  max_raw_size_kb: 1024
+
+mappings:
+  target.url:  "$.lkp_location_url"
+  target.path: "$.lkp_location_path"
+  target.hostname:
+    source: "$.ctx_scan_host"
+    transform:
+      - type: url_hostname_only
+
+  identity.raw_rule_id: "$.app_id"
+  identity.standardized_rule_id:
+    source: "$.app_id"
+    transform:
+      - type: regex_extract
+        pattern: 'acx/\d+/(.+)\.yaml$'
+        group: 1
+        prefix: "invicti:"
+  identity.name:     "$.name"
+  identity.category: "$.type"
+  identity.cve:
+    source: "$.tags"
+    transform:
+      - type: filter_by_prefix
+        prefix: "CVE-"
+  identity.cwe:
+    source: "$.tags"
+    transform:
+      - type: filter_by_prefix
+        prefix: "CWE-"
+  identity.cvss_score:  "$.cvss4_score"
+  identity.cvss_vector: "$.cvss4"
+
+  severity:
+    source: "$.severity"
+    transform:
+      - type: integer_map
+        map:
+          0: info
+          1: low
+          2: medium
+          3: high
+          4: critical
+
+  evidence.matched_at:       "$.lkp_vuln_detail_loc_url"
+  evidence.curl_command:     "$.lkp_vuln_detail_loc_url"
+  evidence.request:          "$.lkp_vuln_detail_request"
+  evidence.response:         "$.lkp_vuln_detail_response"
+  evidence.details:          "$.lkp_vuln_detail_details"
+  evidence.details_template: "$.details_template"
+  evidence.raw:              "$"
+
+  tags:       "$.tags"
+  references: "$.refs[*].url"

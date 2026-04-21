@@ -1,0 +1,93 @@
+scanner: nuclei
+finding_type_default: vulnerability
+
+input:
+  format: auto   # auto-detect: json-array or jsonl
+
+# Structural fingerprint — validated BEFORE extraction
+# Nuclei: root is an array/jsonl where each item has 'template-id' and 'info.severity'
+input_validation:
+  required_paths:
+    - "$[0].template-id"        # every Nuclei finding has a template-id
+    - "$[0].info.severity"      # severity is always present in Nuclei output
+  forbidden_paths:
+    - "$.export.scans"          # would indicate Invicti
+    - "$.issue_events"          # would indicate Burp Suite
+
+extraction:
+  mode: flat
+  findings_path: "$[*]"   # json-array root; for jsonl files "$" also works via auto
+
+finding_type_rules:
+  - if_tag_contains: ["cve"]
+    set_type: vulnerability
+  - if_tag_contains: ["ssl", "tls"]
+    set_type: ssl_finding
+  - if_tag_contains: ["exposure", "exposed"]
+    set_type: exposure
+  - if_tag_contains: ["misconfig"]
+    set_type: misconfiguration
+  - if_tag_contains: ["tech", "detect"]
+    set_type: exposure
+  - default: vulnerability
+
+required_fields:
+  - target.hostname
+  - identity.standardized_rule_id
+  - severity
+
+evidence_limits:
+  max_response_size_kb: 512
+  skip_binary_content: true
+  max_raw_size_kb: 1024
+
+mappings:
+  target.ip:       "$.ip"
+  target.hostname: "$.host"
+  target.url:
+    sources:
+      - "$.matched-at"
+      - "$.matched_at"
+  target.port:
+    source: "$.port"
+    transform:
+      - type: cast_int
+  target.protocol: "$.scheme"
+
+  identity.standardized_rule_id:
+    source: "$.template-id"
+    transform:
+      - type: regex_extract
+        pattern: '(?i)(CVE-\d{4}-\d+)'
+        group: 1
+        uppercase_match: true
+        fallback_source: "$.template-id"
+        fallback_prefix: "nuclei:"
+      - type: regex_replace
+        pattern: '\.yaml$'
+        replacement: ""
+  identity.raw_rule_id: "$.template-id"
+  identity.name:     "$.info.name"
+  identity.category: "$.info.tags[0]"
+  identity.cve:
+    source: "$.info.classification.cve-id"
+    transform:
+      - type: passthrough
+  identity.cwe:       "$.info.classification.cwe-id"
+  identity.cvss_score: "$.info.classification.cvss-metrics[0].score"
+  identity.cvss_vector: "$.info.classification.cvss-metrics[0].vector"
+
+  severity: "$.info.severity"
+
+  evidence.request:      "$.request"
+  evidence.response:     "$.response"
+  evidence.matched_at:
+    sources:
+      - "$.matched-at"
+      - "$.matched_at"
+  evidence.extracted:    "$.extracted-results"
+  evidence.curl_command: "$.curl-command"
+  evidence.raw:          "$"
+
+  tags:       "$.info.tags"
+  references: "$.info.reference"

@@ -6,7 +6,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import get_settings
 from app.db.indexes import ensure_indexes
 from app.db.mongo import close_mongo_client
-from app.routes import assets, auth, graph, map_data, stats, users, vulns
+from app.routes import assets, auth, graph, hunting_maps, map_data, stats, users, vulns
 from app.services.geoip import close_geoip_readers
 
 settings = get_settings()
@@ -42,6 +42,7 @@ app.include_router(assets.router, prefix="/api", tags=["assets"])
 app.include_router(graph.router, prefix="/api", tags=["graph"])
 app.include_router(map_data.router, prefix="/api", tags=["map"])
 app.include_router(users.router, prefix="/api", tags=["users"])
+app.include_router(hunting_maps.router, prefix="/api", tags=["hunting-maps"])
 
 
 @app.get("/health", tags=["health"])

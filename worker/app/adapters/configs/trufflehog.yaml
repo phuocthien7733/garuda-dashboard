@@ -1,0 +1,86 @@
+# TruffleHog v3 JSON output (--json flag)
+# Each line: {"SourceMetadata": {...}, "DetectorName": "AWS", "Raw": "...", "Verified": true}
+scanner: trufflehog
+finding_type_default: secret
+
+input:
+  format: jsonl
+
+# Structural fingerprint — validated BEFORE extraction
+# TruffleHog: each JSONL line has 'DetectorName' and 'SourceMetadata'
+input_validation:
+  required_paths:
+    - "$[0].DetectorName"       # every TruffleHog finding has a detector name
+    - "$[0].SourceMetadata"     # source metadata is always present
+  forbidden_paths:
+    - "$[0].template-id"        # would indicate Nuclei
+    - "$.export.scans"          # would indicate Invicti
+    - "$.issue_events"          # would indicate Burp Suite
+
+extraction:
+  mode: flat
+  findings_path: "$"   # each JSONL line is one finding
+
+finding_type_rules:
+  - default: secret
+
+required_fields:
+  - target.hostname
+  - identity.standardized_rule_id
+  - severity
+
+evidence_limits:
+  max_response_size_kb: 64
+  max_raw_size_kb: 256
+
+mappings:
+  target.url: "$.SourceMetadata.Data.Git.link"
+  target.hostname:
+    source: "$.SourceMetadata.Data.Git.link"
+    transform:
+      - type: url_hostname_only
+
+  identity.raw_rule_id: "$.DetectorName"
+  identity.standardized_rule_id:
+    source: "$.DetectorName"
+    transform:
+      - type: slugify
+        prefix: "trufflehog:"
+  identity.name:
+    source: "$.DetectorName"
+    transform:
+      - type: cast_str
+        # Result will be e.g. "AWS" → prefixed by static below
+  identity.category:
+    source: "$.DetectorName"
+    transform:
+      - type: slugify
+        prefix: "secret_"
+
+  severity: "'high'"
+
+  evidence.secret_type:  "$.DetectorName"
+  evidence.repo_url:     "$.SourceMetadata.Data.Git.repository"
+  evidence.commit_hash:  "$.SourceMetadata.Data.Git.commit"
+  evidence.file_path:    "$.SourceMetadata.Data.Git.file"
+  evidence.line_number:
+    source: "$.SourceMetadata.Data.Git.line"
+    transform:
+      - type: cast_int
+  # Raw and RawV2 are intentionally OMITTED to avoid storing actual secret values.
+  # Only store metadata (detector name, verified status, file location).
+  evidence.raw:
+    source: "$"
+    transform:
+      - type: omit_keys
+        keys:
+          - "Raw"
+          - "RawV2"
+
+  tags:
+    source:
+      - "$.DetectorType"
+      - "$.DetectorName"
+    static:
+      - "secret"
+      - "credential"

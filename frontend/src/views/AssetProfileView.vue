@@ -20,6 +20,9 @@ type VulnerabilityRecord = {
   ip?: string | null;
   host?: string | null;
   port?: string | number | null;
+  matched_at?: string | null;
+  template_id?: string | null;
+  source_tool_first?: string | null;
   status?: string | null;
   first_seen?: string | null;
   last_seen?: string | null;
@@ -103,6 +106,14 @@ const assetTemplateIds = computed(() => {
   const value = asset.value?.template_ids;
   return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : [];
 });
+const assetDiscoveryTools = computed(() => {
+  const value = asset.value?.discovery_tools;
+  return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : [];
+});
+const assetOpenFindingTypes = computed(() => {
+  const value = asset.value?.open_finding_types;
+  return Array.isArray(value) ? value.map((item) => String(item)).filter(Boolean) : [];
+});
 const highestSeverity = computed(() => String(asset.value?.highest_severity ?? "--"));
 const isAdmin = computed(() => authStore.isAdmin);
 const availablePorts = computed(() => {
@@ -136,6 +147,50 @@ const allPageRowsSelected = computed(() =>
   selectablePageFingerprints.value.length > 0 && selectablePageFingerprints.value.every((fingerprint) => selectedFingerprints.value.includes(fingerprint)),
 );
 const selectedVulnerabilityCurl = computed(() => extractCurlCommand(selectedVulnerability.value));
+
+const selectedVulnIdentity = computed(() => {
+  if (!selectedVulnerability.value) return null;
+  const v = selectedVulnerability.value;
+  const identity = (v.identity as Record<string, unknown> | null) ?? {};
+  const rawRuleId = String((identity as any).raw_rule_id ?? "");
+  const templateId = String(v.template_id || (identity as any).standardized_rule_id || rawRuleId || "--");
+  return {
+    template_id: templateId,
+    raw_rule_id: rawRuleId && rawRuleId !== templateId ? rawRuleId : "",
+    category: String(v.finding_type || (identity as any).category || "--"),
+    cve: Array.isArray((identity as any).cve) ? ((identity as any).cve as string[]) : [],
+    cwe: Array.isArray((identity as any).cwe) ? ((identity as any).cwe as string[]) : [],
+    cvss_score: (identity as any).cvss_score != null ? String((identity as any).cvss_score) : "",
+    cvss_vector: (identity as any).cvss_vector ? String((identity as any).cvss_vector) : "",
+  };
+});
+
+const selectedVulnTarget = computed(() => {
+  if (!selectedVulnerability.value) return null;
+  const v = selectedVulnerability.value;
+  const target = (v.target as Record<string, unknown> | null) ?? {};
+  const evidence = (v.evidence as Record<string, unknown> | null) ?? {};
+  return {
+    host: String(v.host || "--"),
+    ip: String(v.ip || "--"),
+    port: String(v.port || "--"),
+    protocol: String((target as any).protocol || ""),
+    matched_at: String(evidence.matched_at || v.matched_at || (v as any)["matched-at"] || "--"),
+  };
+});
+
+const selectedVulnDetection = computed(() => {
+  if (!selectedVulnerability.value) return null;
+  const v = selectedVulnerability.value;
+  return {
+    source_tool: String(v.source_tool_first || "--"),
+    discovery_tools: Array.isArray(v.discovery_tools) ? (v.discovery_tools as string[]) : [],
+    first_seen: v.first_seen ? formatDate(v.first_seen) : "--",
+    last_seen: v.last_seen ? formatDate(v.last_seen) : "--",
+    tags: Array.isArray(v.tags) ? (v.tags as string[]) : [],
+    references: Array.isArray(v.references) ? (v.references as string[]) : [],
+  };
+});
 
 const vulnerabilityDetailEntries = computed(() => {
   if (!selectedVulnerability.value) {
@@ -659,43 +714,47 @@ onBeforeUnmount(() => {
             </div>
           </article>
 
-          <article class="rounded-[1.25rem] border border-white/10 bg-slate-950/55 p-4">
-            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">First Seen</p>
-            <p class="mt-3 text-sm text-slate-200">{{ formatDate(asset?.first_seen) }}</p>
-          </article>
-
-          <article class="rounded-[1.25rem] border border-white/10 bg-slate-950/55 p-4">
-            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Last Seen</p>
-            <p class="mt-3 text-sm text-slate-200">{{ formatDate(asset?.last_seen) }}</p>
-          </article>
-
-          <article class="rounded-[1.25rem] border border-white/10 bg-slate-950/55 p-4">
-            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Access Type</p>
-            <div class="mt-3 flex flex-wrap gap-2">
-              <span
-                v-for="service in assetServices"
-                :key="service"
-                class="rounded-full border border-emerald-400/20 bg-emerald-400/10 px-2.5 py-1 text-xs text-emerald-200"
-              >
-                {{ service }}
-              </span>
-              <span v-if="assetServices.length === 0" class="text-sm text-slate-400">--</span>
+          <div class="contents md:col-span-2 xl:col-span-3">
+            <div class="grid grid-cols-2 gap-4 md:col-span-2 xl:col-span-3">
+              <article class="rounded-[1.25rem] border border-white/10 bg-slate-950/55 p-4">
+                <p class="text-xs uppercase tracking-[0.22em] text-slate-500">First Seen</p>
+                <p class="mt-3 text-sm text-slate-200">{{ formatDate(asset?.first_seen) }}</p>
+              </article>
+              <article class="rounded-[1.25rem] border border-white/10 bg-slate-950/55 p-4">
+                <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Last Seen</p>
+                <p class="mt-3 text-sm text-slate-200">{{ formatDate(asset?.last_seen) }}</p>
+              </article>
             </div>
-          </article>
+          </div>
 
-          <article class="rounded-[1.25rem] border border-white/10 bg-slate-950/55 p-4 md:col-span-2 xl:col-span-3">
-            <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Template Id</p>
-            <div class="mt-3 flex flex-wrap gap-2">
-              <span
-                v-for="templateId in assetTemplateIds"
-                :key="templateId"
-                class="rounded-full border border-fuchsia-400/20 bg-fuchsia-400/10 px-2.5 py-1 text-xs text-fuchsia-200"
-              >
-                {{ templateId }}
-              </span>
-              <span v-if="assetTemplateIds.length === 0" class="text-sm text-slate-400">--</span>
-            </div>
-          </article>
+          <div class="grid grid-cols-2 gap-4 md:col-span-2 xl:col-span-3">
+            <article class="rounded-[1.25rem] border border-white/10 bg-slate-950/55 p-4">
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Discovery Tools</p>
+              <div class="mt-3 flex flex-wrap gap-2">
+                <span
+                  v-for="tool in assetDiscoveryTools"
+                  :key="tool"
+                  class="rounded-full border border-fuchsia-400/20 bg-fuchsia-400/10 px-2.5 py-1 text-xs text-fuchsia-200"
+                >
+                  {{ tool }}
+                </span>
+                <span v-if="assetDiscoveryTools.length === 0" class="text-sm text-slate-400">--</span>
+              </div>
+            </article>
+            <article class="rounded-[1.25rem] border border-white/10 bg-slate-950/55 p-4">
+              <p class="text-xs uppercase tracking-[0.22em] text-slate-500">Open Finding Types</p>
+              <div class="mt-3 flex flex-wrap gap-2">
+                <span
+                  v-for="ft in assetOpenFindingTypes"
+                  :key="ft"
+                  class="rounded-full border border-amber-400/20 bg-amber-400/10 px-2.5 py-1 text-xs text-amber-200"
+                >
+                  {{ ft }}
+                </span>
+                <span v-if="assetOpenFindingTypes.length === 0" class="text-sm text-slate-400">--</span>
+              </div>
+            </article>
+          </div>
         </div>
       </section>
 
@@ -808,11 +867,10 @@ onBeforeUnmount(() => {
                 </th>
                 <th class="px-3 py-3">Name</th>
                 <th class="px-3 py-3">Severity</th>
-                <th class="px-3 py-3">IP</th>
                 <th class="px-3 py-3">Host</th>
+                <th class="px-3 py-3">IP</th>
                 <th class="px-3 py-3">Port</th>
-                <th class="px-3 py-3">First Seen</th>
-                <th class="px-3 py-3">Last Seen</th>
+                <th class="px-3 py-3">Source Tool</th>
                 <th class="px-3 py-3">Status</th>
                 <th class="px-3 py-3 text-right">Controls</th>
               </tr>
@@ -844,11 +902,10 @@ onBeforeUnmount(() => {
                     {{ effectiveSeverity(vulnerability) }}
                   </span>
                 </td>
-                <td class="px-3 py-4 text-slate-300">{{ vulnerability.ip || '--' }}</td>
                 <td class="px-3 py-4 text-slate-300">{{ vulnerability.host || '--' }}</td>
+                <td class="px-3 py-4 text-slate-300">{{ vulnerability.ip || '--' }}</td>
                 <td class="px-3 py-4 text-slate-300">{{ vulnerability.port || '--' }}</td>
-                <td class="px-3 py-4 text-slate-300">{{ formatDate(vulnerability.first_seen) }}</td>
-                <td class="px-3 py-4 text-slate-300">{{ formatDate(vulnerability.last_seen) }}</td>
+                <td class="px-3 py-4 text-slate-300">{{ vulnerability.source_tool_first || '--' }}</td>
                 <td class="px-3 py-4">
                   <span class="rounded-full px-3 py-1 text-xs font-semibold" :class="statusClasses(effectiveStatus(vulnerability))">
                     {{ effectiveStatus(vulnerability) }}
@@ -923,7 +980,9 @@ onBeforeUnmount(() => {
       class="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/78 px-4 py-6 backdrop-blur-sm"
       @click.self="closeVulnerabilityDetail"
     >
-      <div class="max-h-[94vh] w-full max-w-[min(96vw,108rem)] overflow-hidden rounded-[1.6rem] border border-white/10 bg-slate-900 shadow-2xl shadow-black/40">
+      <div class="max-h-[94vh] w-full max-w-[min(96vw,110rem)] overflow-hidden rounded-[1.6rem] border border-white/10 bg-slate-900 shadow-2xl shadow-black/40">
+
+        <!-- Header -->
         <div class="flex items-start justify-between gap-4 border-b border-white/10 px-6 py-5">
           <div>
             <p class="text-xs font-semibold uppercase tracking-[0.28em] text-slate-500">Vulnerability Detail</p>
@@ -935,88 +994,200 @@ onBeforeUnmount(() => {
               <span class="rounded-full px-3 py-1 text-xs font-semibold" :class="statusClasses(effectiveStatus(selectedVulnerability))">
                 {{ effectiveStatus(selectedVulnerability) }}
               </span>
-              <span class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs text-slate-400">
-                {{ selectedVulnerability.host || '--' }}
+              <span class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 font-mono text-xs text-slate-300">
+                {{ selectedVulnTarget?.host }}
+              </span>
+              <span v-if="selectedVulnIdentity?.category && selectedVulnIdentity.category !== '--'" class="rounded-full border border-sky-400/15 bg-sky-400/10 px-3 py-1 text-xs font-semibold text-sky-300">
+                {{ selectedVulnIdentity.category }}
               </span>
             </div>
           </div>
-
           <button
             type="button"
-            class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-white/20 hover:bg-white/[0.08]"
+            class="shrink-0 rounded-full border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-white/20 hover:bg-white/[0.08]"
             @click="closeVulnerabilityDetail"
           >
             Close
           </button>
         </div>
 
+        <!-- Body -->
         <div class="max-h-[calc(94vh-5.5rem)] overflow-y-auto px-6 py-5">
-          <section class="grid gap-4 xl:grid-cols-[minmax(0,0.85fr)_minmax(0,1.15fr)]">
-            <div class="rounded-[1.25rem] border border-white/10 bg-slate-950/55 p-4">
-              <p class="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Metadata</p>
-              <div class="mt-4 grid gap-3 sm:grid-cols-2">
-                <article
-                  v-for="entry in vulnerabilityDetailEntries"
-                  :key="entry.key"
-                  class="rounded-xl border border-white/8 bg-white/[0.03] px-3 py-3"
-                >
-                  <p class="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">{{ entry.label }}</p>
-                  <pre class="mt-2 whitespace-pre-wrap break-words font-sans text-sm text-slate-200">{{ entry.value }}</pre>
-                </article>
+          <section class="grid gap-4 xl:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)]">
+
+            <!-- Left: structured metadata cards -->
+            <div class="space-y-4">
+
+              <!-- Finding Identity -->
+              <div class="rounded-[1.25rem] border border-white/10 bg-slate-950/55 p-4">
+                <p class="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Finding Identity</p>
+                <dl class="mt-4 space-y-3">
+                  <div class="grid grid-cols-[6.5rem_1fr] items-start gap-x-3 text-sm">
+                    <dt class="font-semibold text-slate-500">Template ID</dt>
+                    <dd class="break-all font-mono text-xs leading-5 text-sky-300">{{ selectedVulnIdentity?.template_id }}</dd>
+                  </div>
+                  <div v-if="selectedVulnIdentity?.raw_rule_id" class="grid grid-cols-[6.5rem_1fr] items-start gap-x-3 text-sm">
+                    <dt class="font-semibold text-slate-500">Raw Rule</dt>
+                    <dd class="break-all font-mono text-xs leading-5 text-slate-400">{{ selectedVulnIdentity.raw_rule_id }}</dd>
+                  </div>
+                  <div class="grid grid-cols-[6.5rem_1fr] items-start gap-x-3 text-sm">
+                    <dt class="font-semibold text-slate-500">Type</dt>
+                    <dd class="text-slate-200">{{ selectedVulnIdentity?.category }}</dd>
+                  </div>
+                  <div v-if="selectedVulnIdentity?.cve.length" class="grid grid-cols-[6.5rem_1fr] items-start gap-x-3 text-sm">
+                    <dt class="pt-0.5 font-semibold text-slate-500">CVE</dt>
+                    <dd class="flex flex-wrap gap-1.5">
+                      <span v-for="c in selectedVulnIdentity.cve" :key="c" class="rounded-full border border-red-400/20 bg-red-400/10 px-2 py-0.5 font-mono text-xs text-red-300">{{ c }}</span>
+                    </dd>
+                  </div>
+                  <div v-if="selectedVulnIdentity?.cwe.length" class="grid grid-cols-[6.5rem_1fr] items-start gap-x-3 text-sm">
+                    <dt class="pt-0.5 font-semibold text-slate-500">CWE</dt>
+                    <dd class="flex flex-wrap gap-1.5">
+                      <span v-for="w in selectedVulnIdentity.cwe" :key="w" class="rounded-full border border-amber-400/20 bg-amber-400/10 px-2 py-0.5 font-mono text-xs text-amber-300">{{ w }}</span>
+                    </dd>
+                  </div>
+                  <div v-if="selectedVulnIdentity?.cvss_score" class="grid grid-cols-[6.5rem_1fr] items-start gap-x-3 text-sm">
+                    <dt class="font-semibold text-slate-500">CVSS</dt>
+                    <dd>
+                      <span class="font-bold text-orange-300">{{ selectedVulnIdentity.cvss_score }}</span>
+                      <span v-if="selectedVulnIdentity.cvss_vector" class="ml-2 break-all font-mono text-xs text-slate-400">{{ selectedVulnIdentity.cvss_vector }}</span>
+                    </dd>
+                  </div>
+                </dl>
               </div>
+
+              <!-- Target -->
+              <div class="rounded-[1.25rem] border border-white/10 bg-slate-950/55 p-4">
+                <p class="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Target</p>
+                <dl class="mt-4 space-y-3">
+                  <div class="grid grid-cols-[6.5rem_1fr] items-start gap-x-3 text-sm">
+                    <dt class="font-semibold text-slate-500">Host</dt>
+                    <dd class="break-all font-mono text-xs leading-5 text-slate-200">{{ selectedVulnTarget?.host }}</dd>
+                  </div>
+                  <div class="grid grid-cols-[6.5rem_1fr] items-start gap-x-3 text-sm">
+                    <dt class="font-semibold text-slate-500">IP</dt>
+                    <dd class="font-mono text-xs text-slate-200">{{ selectedVulnTarget?.ip }}</dd>
+                  </div>
+                  <div class="grid grid-cols-[6.5rem_1fr] items-start gap-x-3 text-sm">
+                    <dt class="font-semibold text-slate-500">Port</dt>
+                    <dd class="font-mono text-xs text-slate-200">{{ selectedVulnTarget?.port }}</dd>
+                  </div>
+                  <div v-if="selectedVulnTarget?.protocol" class="grid grid-cols-[6.5rem_1fr] items-start gap-x-3 text-sm">
+                    <dt class="font-semibold text-slate-500">Protocol</dt>
+                    <dd class="text-slate-200">{{ selectedVulnTarget.protocol }}</dd>
+                  </div>
+                  <div class="grid grid-cols-[6.5rem_1fr] items-start gap-x-3 text-sm">
+                    <dt class="font-semibold text-slate-500">Matched At</dt>
+                    <dd class="break-all font-mono text-xs leading-5 text-emerald-300">{{ selectedVulnTarget?.matched_at }}</dd>
+                  </div>
+                </dl>
+              </div>
+
+              <!-- Detection Info -->
+              <div class="rounded-[1.25rem] border border-white/10 bg-slate-950/55 p-4">
+                <p class="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Detection Info</p>
+                <dl class="mt-4 space-y-3">
+                  <div v-if="selectedVulnDetection?.discovery_tools.length" class="grid grid-cols-[6.5rem_1fr] items-start gap-x-3 text-sm">
+                    <dt class="pt-0.5 font-semibold text-slate-500">Scanners</dt>
+                    <dd class="flex flex-wrap gap-1.5">
+                      <span v-for="t in selectedVulnDetection.discovery_tools" :key="t" class="rounded-full border border-fuchsia-400/20 bg-fuchsia-400/10 px-2 py-0.5 text-xs text-fuchsia-300">{{ t }}</span>
+                    </dd>
+                  </div>
+                  <div class="grid grid-cols-[6.5rem_1fr] items-start gap-x-3 text-sm">
+                    <dt class="font-semibold text-slate-500">First Seen</dt>
+                    <dd class="text-slate-200">{{ selectedVulnDetection?.first_seen }}</dd>
+                  </div>
+                  <div class="grid grid-cols-[6.5rem_1fr] items-start gap-x-3 text-sm">
+                    <dt class="font-semibold text-slate-500">Last Seen</dt>
+                    <dd class="text-slate-200">{{ selectedVulnDetection?.last_seen }}</dd>
+                  </div>
+                  <div v-if="selectedVulnDetection?.tags.length" class="grid grid-cols-[6.5rem_1fr] items-start gap-x-3 text-sm">
+                    <dt class="pt-0.5 font-semibold text-slate-500">Tags</dt>
+                    <dd class="flex flex-wrap gap-1.5">
+                      <span v-for="tag in selectedVulnDetection.tags" :key="tag" class="rounded-full border border-white/10 bg-white/[0.04] px-2 py-0.5 text-xs text-slate-300">{{ tag }}</span>
+                    </dd>
+                  </div>
+                  <div v-if="selectedVulnDetection?.references.length" class="grid grid-cols-[6.5rem_1fr] items-start gap-x-3 text-sm">
+                    <dt class="pt-0.5 font-semibold text-slate-500">References</dt>
+                    <dd class="space-y-1">
+                      <a
+                        v-for="ref in selectedVulnDetection.references"
+                        :key="ref"
+                        :href="ref"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        class="block break-all font-mono text-xs text-sky-400 hover:text-sky-300 hover:underline"
+                      >{{ ref }}</a>
+                    </dd>
+                  </div>
+                </dl>
+              </div>
+
             </div>
 
+            <!-- Right: evidence panels -->
             <div class="space-y-4">
-              <article class="rounded-[1.25rem] border border-white/10 bg-slate-950/55 p-4">
+
+              <article class="rounded-[1.25rem] border border-cyan-400/10 bg-slate-950/55 p-4">
                 <div class="flex items-center justify-between gap-3">
-                  <p class="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">Curl Command</p>
+                  <div>
+                    <p class="text-xs font-semibold uppercase tracking-[0.24em] text-cyan-400/70">Curl Command</p>
+                    <p class="mt-0.5 text-[11px] text-slate-500">Reproduce the request directly from your terminal</p>
+                  </div>
                   <button
                     type="button"
-                    class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs font-semibold text-slate-200 transition hover:border-white/20 hover:bg-white/[0.08]"
+                    class="shrink-0 rounded-full border border-cyan-400/20 bg-cyan-400/10 px-3 py-1 text-xs font-semibold text-cyan-200 transition hover:border-cyan-400/35 hover:bg-cyan-400/18"
                     @click="copyContent('curl', selectedVulnerabilityCurl)"
                   >
-                    {{ copiedSection === 'curl' ? 'Copied' : 'Copy curl' }}
+                    {{ copiedSection === 'curl' ? 'Copied ✓' : 'Copy' }}
                   </button>
                 </div>
                 <pre
-                  class="mt-4 max-h-[12rem] overflow-auto rounded-[1rem] border border-white/8 bg-slate-950 px-4 py-4 text-xs leading-6 text-slate-200"
+                  class="mt-3 max-h-[11rem] cursor-pointer overflow-auto rounded-[1rem] border border-cyan-400/10 bg-slate-950 px-4 py-3 text-xs leading-6 text-slate-200 transition hover:border-cyan-400/20"
                   @click="copyContent('curl', selectedVulnerabilityCurl)"
                 >{{ selectedVulnerabilityCurl || 'No curl command available.' }}</pre>
               </article>
 
-              <article class="rounded-[1.25rem] border border-white/10 bg-slate-950/55 p-4">
+              <article class="rounded-[1.25rem] border border-orange-400/10 bg-slate-950/55 p-4">
                 <div class="flex items-center justify-between gap-3">
-                  <p class="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">PoC Request</p>
+                  <div>
+                    <p class="text-xs font-semibold uppercase tracking-[0.24em] text-orange-400/70">PoC Request</p>
+                    <p class="mt-0.5 text-[11px] text-slate-500">Raw HTTP request sent to the target</p>
+                  </div>
                   <button
                     type="button"
-                    class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs font-semibold text-slate-200 transition hover:border-white/20 hover:bg-white/[0.08]"
+                    class="shrink-0 rounded-full border border-orange-400/20 bg-orange-400/10 px-3 py-1 text-xs font-semibold text-orange-200 transition hover:border-orange-400/35 hover:bg-orange-400/18"
                     @click="copyContent('request', selectedVulnerability.request)"
                   >
-                    {{ copiedSection === 'request' ? 'Copied' : 'Copy request' }}
+                    {{ copiedSection === 'request' ? 'Copied ✓' : 'Copy' }}
                   </button>
                 </div>
                 <pre
-                  class="mt-4 max-h-[16rem] overflow-auto rounded-[1rem] border border-white/8 bg-slate-950 px-4 py-4 text-xs leading-6 text-slate-200"
+                  class="mt-3 max-h-[16rem] cursor-pointer overflow-auto rounded-[1rem] border border-orange-400/10 bg-slate-950 px-4 py-3 text-xs leading-6 text-slate-200 transition hover:border-orange-400/20"
                   @click="copyContent('request', selectedVulnerability.request)"
                 >{{ selectedVulnerability.request || 'No request data available.' }}</pre>
               </article>
 
-              <article class="rounded-[1.25rem] border border-white/10 bg-slate-950/55 p-4">
+              <article class="rounded-[1.25rem] border border-emerald-400/10 bg-slate-950/55 p-4">
                 <div class="flex items-center justify-between gap-3">
-                  <p class="text-xs font-semibold uppercase tracking-[0.24em] text-slate-500">PoC Response</p>
+                  <div>
+                    <p class="text-xs font-semibold uppercase tracking-[0.24em] text-emerald-400/70">PoC Response</p>
+                    <p class="mt-0.5 text-[11px] text-slate-500">Server response confirming the vulnerability</p>
+                  </div>
                   <button
                     type="button"
-                    class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs font-semibold text-slate-200 transition hover:border-white/20 hover:bg-white/[0.08]"
+                    class="shrink-0 rounded-full border border-emerald-400/20 bg-emerald-400/10 px-3 py-1 text-xs font-semibold text-emerald-200 transition hover:border-emerald-400/35 hover:bg-emerald-400/18"
                     @click="copyContent('response', selectedVulnerability.response)"
                   >
-                    {{ copiedSection === 'response' ? 'Copied' : 'Copy response' }}
+                    {{ copiedSection === 'response' ? 'Copied ✓' : 'Copy' }}
                   </button>
                 </div>
                 <pre
-                  class="mt-4 max-h-[16rem] overflow-auto rounded-[1rem] border border-white/8 bg-slate-950 px-4 py-4 text-xs leading-6 text-slate-200"
+                  class="mt-3 max-h-[16rem] cursor-pointer overflow-auto rounded-[1rem] border border-emerald-400/10 bg-slate-950 px-4 py-3 text-xs leading-6 text-slate-200 transition hover:border-emerald-400/20"
                   @click="copyContent('response', selectedVulnerability.response)"
                 >{{ selectedVulnerability.response || 'No response data available.' }}</pre>
               </article>
+
             </div>
           </section>
         </div>

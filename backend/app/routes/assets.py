@@ -159,10 +159,58 @@ def _serialize_mongo_document(document: dict) -> dict:
 
 def _normalize_asset(document: dict) -> dict:
     payload = _serialize_mongo_document(document)
-    payload["host"] = payload.get("host") or payload.get("id") or ""
+    # Resolve canonical host key: v2 uses host_normalized, v1 used host.
+    # Explicitly skip empty strings so we never fall back to the raw ObjectId.
+    def _first_truthy(*values: object) -> str:
+        for v in values:
+            s = str(v).strip() if v else ""
+            if s and s != "unknown":
+                return s
+        # Last resort: return "unknown" rather than the ObjectId
+        for v in values:
+            s = str(v).strip() if v else ""
+            if s:
+                return s
+        return ""
+
+    payload["host"] = _first_truthy(
+        payload.get("host_normalized"),
+        payload.get("host"),
+    ) or str(payload.get("id") or "")
     payload["ip_addresses"] = sorted({item for item in payload.get("ip_addresses", []) if item})
-    payload["open_ports"] = sorted({str(item) for item in payload.get("open_ports", []) if item})
-    payload["services"] = sorted({item for item in payload.get("services", []) if item})
+
+    # Derive open_ports from v2 port_metadata — return full "port/protocol" keys
+    # (e.g. "443/https", "22/tcp") so the port filter can do an exact key lookup.
+    # For v1 documents the flat open_ports list (port numbers) is preserved as-is.
+    port_metadata: dict = payload.get("port_metadata") or {}
+    if port_metadata:
+        open_ports = sorted(
+            {
+                key
+                for key, meta in port_metadata.items()
+                if isinstance(meta, dict) and meta.get("status") == "open"
+            },
+            key=lambda p: (
+                not p.split("/")[0].isdigit(),
+                int(p.split("/")[0]) if p.split("/")[0].isdigit() else 0,
+                p,
+            ),
+        )
+    else:
+        open_ports = sorted({str(item) for item in payload.get("open_ports", []) if item})
+    payload["open_ports"] = open_ports
+
+    # Derive services from v2 port_metadata or v1 services list
+    if port_metadata:
+        payload["services"] = sorted({
+            meta.get("service", "")
+            for meta in port_metadata.values()
+            if isinstance(meta, dict) and meta.get("service")
+        })
+    else:
+        payload["services"] = sorted({item for item in payload.get("services", []) if item})
+
+    # template_ids not present in v2; provide empty list for API compatibility
     payload["template_ids"] = sorted({item for item in payload.get("template_ids", []) if item})
     payload["vulnerability_count"] = int(payload.get("vulnerability_count", 0) or 0)
     return payload
@@ -170,8 +218,51 @@ def _normalize_asset(document: dict) -> dict:
 
 def _normalize_vulnerability(document: dict) -> dict:
     payload = _serialize_mongo_document(document)
-    if payload.get("port") is not None:
-        payload["port"] = str(payload["port"])
+
+    # Flatten v2 UDM nested fields into top-level keys (mirrors _serialize_vulnerability in vulns.py)
+    target = payload.get("target") or {}
+    identity = payload.get("identity") or {}
+    evidence = payload.get("evidence") or {}
+
+    if not payload.get("host"):
+        payload["host"] = (
+            target.get("host_normalized")
+            or target.get("hostname")
+            or ""
+        )
+    if not payload.get("name"):
+        payload["name"] = identity.get("name") or ""
+    if not payload.get("template_id"):
+        payload["template_id"] = (
+            identity.get("standardized_rule_id")
+            or identity.get("raw_rule_id")
+            or payload.get("template-id")
+            or ""
+        )
+    if not payload.get("matched_at"):
+        payload["matched_at"] = (
+            evidence.get("matched_at")
+            or payload.get("matched-at")
+            or ""
+        )
+    if not payload.get("ip"):
+        payload["ip"] = target.get("ip") or ""
+    # Preserve request/response/curl from evidence for the detail modal
+    if not payload.get("request"):
+        payload["request"] = evidence.get("request") or payload.get("request") or ""
+    if not payload.get("response"):
+        payload["response"] = evidence.get("response") or payload.get("response") or ""
+    if not payload.get("curl_command"):
+        payload["curl_command"] = (
+            evidence.get("curl_command")
+            or evidence.get("curl-command")
+            or payload.get("curl-command")
+            or ""
+        )
+
+    raw_port = target.get("port") or payload.get("port")
+    payload["port"] = str(raw_port) if raw_port is not None else None
+
     return payload
 
 
@@ -201,18 +292,19 @@ def _asset_graph_detail(asset: dict) -> dict:
     return {
         "asset_id": asset.get("id"),
         "ip": _format_detail_list(asset.get("ip_addresses", [])),
-        "host": asset.get("host") or "--",
+        "host": asset.get("host") or asset.get("host_normalized") or "--",
         "ports": _format_detail_list(asset.get("open_ports", [])),
         "services": _format_detail_list(asset.get("services", [])),
-        "tech": _format_detail_list(asset.get("template_ids", [])),
+        "tech": _format_detail_list(asset.get("open_finding_types") or asset.get("template_ids", [])),
         "highest_severity": asset.get("highest_severity") or "--",
     }
 
 
 def _build_asset_graph_node(asset: dict, category: str) -> dict:
+    host = asset.get("host") or asset.get("host_normalized") or asset.get("id") or "unknown"
     return {
-        "id": str(asset.get("id") or asset.get("host") or "unknown-asset"),
-        "name": str(asset.get("host") or asset.get("id") or "unknown"),
+        "id": str(asset.get("id") or host),
+        "name": str(host),
         "category": category,
         "detail": _asset_graph_detail(asset),
     }
@@ -246,22 +338,44 @@ async def list_assets(
     await ensure_asset_inventory(db)
 
     safe_search = _sanitize_search_query(search)
-    query: dict[str, object] = {}
+    conditions: list[dict[str, object]] = []
     if safe_search:
-        query["$or"] = [
-            {"host": {"$regex": safe_search, "$options": "i"}},
-            {"ip_addresses": {"$elemMatch": {"$regex": safe_search, "$options": "i"}}},
-            {"services": {"$elemMatch": {"$regex": safe_search, "$options": "i"}}},
-            {"template_ids": {"$elemMatch": {"$regex": safe_search, "$options": "i"}}},
-        ]
+        conditions.append({
+            "$or": [
+                # v2 field paths
+                {"host_normalized": {"$regex": safe_search, "$options": "i"}},
+                {"ip_addresses": {"$elemMatch": {"$regex": safe_search, "$options": "i"}}},
+                {"services": {"$elemMatch": {"$regex": safe_search, "$options": "i"}}},
+                # v1 field paths (backward compat)
+                {"host": {"$regex": safe_search, "$options": "i"}},
+                {"template_ids": {"$elemMatch": {"$regex": safe_search, "$options": "i"}}},
+            ]
+        })
     if severity:
         normalized_severity = severity.strip().lower()
         if normalized_severity in VALID_SEVERITIES:
-            query["highest_severity"] = normalized_severity
+            conditions.append({"highest_severity": normalized_severity})
     if port:
         normalized_port = port.strip()
         if normalized_port:
-            query["open_ports"] = normalized_port
+            # Build the port filter to cover:
+            #   - Exact key match (e.g. "443/https" or "22/tcp") from v2 port_metadata
+            #   - Port-number-only input fallback: check common protocol suffixes
+            #   - v1 backward compat: flat open_ports list
+            port_or_clauses: list[dict] = [
+                # v2 exact key — covers full "port/protocol" selections from the dropdown
+                {f"port_metadata.{normalized_port}": {"$exists": True}},
+                # v1 backward compat
+                {"open_ports": normalized_port},
+            ]
+            # If the input is a bare port number also check all common protocol suffixes
+            if normalized_port.isdigit():
+                for proto in ("tcp", "udp", "https", "http", "ssl", "tls", "ftp", "ssh"):
+                    port_or_clauses.append(
+                        {f"port_metadata.{normalized_port}/{proto}": {"$exists": True}}
+                    )
+            conditions.append({"$or": port_or_clauses})
+    query: dict[str, object] = {"$and": conditions} if conditions else {}
 
     normalized_time_field = (time_field or "last_seen").strip()
     if normalized_time_field not in {"first_seen", "last_seen"}:
@@ -275,7 +389,12 @@ async def list_assets(
             time_filter["$gte"] = from_boundary
         if to_boundary:
             time_filter["$lte"] = to_boundary
-        query[normalized_time_field] = time_filter
+        # Add time range as an additional $and condition
+        time_condition: dict[str, object] = {normalized_time_field: time_filter}
+        if conditions:
+            query = {"$and": conditions + [time_condition]}
+        else:
+            query = time_condition
 
     final_query = query
     if cursor:
@@ -328,41 +447,66 @@ async def get_asset_vulnerabilities(
     _: CurrentUser = Depends(require_role("admin", "viewer")),
 ):
     db, asset = await _get_asset_by_id(asset_id)
-    host = asset.get("host")
+    # Resolve canonical host from v2 host_normalized or v1 host
+    host = asset.get("host_normalized") or asset.get("host")
     safe_search = _sanitize_search_query(search)
 
-    query: dict[str, object] = {"host": host}
+    # Query both v2 (target.host_normalized) and v1 (host) documents
+    query: dict[str, object] = {
+        "$or": [
+            {"target.host_normalized": host},
+            {"host": host},
+        ]
+    }
     if severity:
         normalized_severity = severity.strip().lower()
         if normalized_severity in VALID_SEVERITIES:
-            query["$or"] = [
-                {"override_severity": normalized_severity},
-                {"severity": normalized_severity},
+            query["$and"] = [
+                {"$or": query.pop("$or")},
+                {"$or": [
+                    {"override_severity": normalized_severity},
+                    {"severity": normalized_severity},
+                ]},
             ]
     if port:
         normalized_port = port.strip()
         if normalized_port:
-            query["port"] = normalized_port
+            try:
+                port_int = int(normalized_port)
+                port_condition: dict[str, object] = {
+                    "$or": [
+                        {"target.port": port_int},
+                        {"port": normalized_port},
+                    ]
+                }
+            except ValueError:
+                port_condition = {"port": normalized_port}
+            if "$and" in query:
+                query["$and"].append(port_condition)  # type: ignore[union-attr]
+            else:
+                existing_or = query.pop("$or", [])
+                query["$and"] = [{"$or": existing_or}, port_condition]
     if safe_search:
-        query["$and"] = [
-            {
-                "$or": [
-                    {"name": {"$regex": safe_search, "$options": "i"}},
-                    {"host": {"$regex": safe_search, "$options": "i"}},
-                    {"ip": {"$regex": safe_search, "$options": "i"}},
-                    {"template_id": {"$regex": safe_search, "$options": "i"}},
-                    {"template-id": {"$regex": safe_search, "$options": "i"}},
-                    {"port": {"$regex": safe_search, "$options": "i"}},
-                ]
-            }
-        ]
-
-    if "$or" in query and "$and" in query:
-        base_or = query.pop("$or")
-        and_conditions = query.get("$and", [])
-        if isinstance(and_conditions, list):
-            and_conditions.insert(0, {"$or": base_or})
-            query["$and"] = and_conditions
+        search_condition: dict[str, object] = {
+            "$or": [
+                # v2 paths
+                {"identity.name": {"$regex": safe_search, "$options": "i"}},
+                {"identity.standardized_rule_id": {"$regex": safe_search, "$options": "i"}},
+                {"target.host_normalized": {"$regex": safe_search, "$options": "i"}},
+                {"target.hostname": {"$regex": safe_search, "$options": "i"}},
+                # v1 paths
+                {"name": {"$regex": safe_search, "$options": "i"}},
+                {"host": {"$regex": safe_search, "$options": "i"}},
+                {"ip": {"$regex": safe_search, "$options": "i"}},
+                {"template_id": {"$regex": safe_search, "$options": "i"}},
+                {"template-id": {"$regex": safe_search, "$options": "i"}},
+            ]
+        }
+        if "$and" in query:
+            query["$and"].append(search_condition)  # type: ignore[union-attr]
+        else:
+            existing_or = query.pop("$or", [])
+            query["$and"] = [{"$or": existing_or}, search_condition]
 
     total = await db.vulnerabilities.count_documents(query)
 
@@ -517,7 +661,7 @@ async def get_asset_network(asset_id: str, _: CurrentUser = Depends(require_role
                     "host": "Shared infrastructure",
                     "ports": _format_detail_list(focus_asset.get("open_ports", [])),
                     "services": _format_detail_list(focus_asset.get("services", [])),
-                    "tech": _format_detail_list(focus_asset.get("template_ids", [])),
+                    "tech": _format_detail_list(focus_asset.get("open_finding_types") or focus_asset.get("template_ids", [])),
                     "highest_severity": focus_asset.get("highest_severity") or "--",
                 },
             }
@@ -529,6 +673,8 @@ async def get_asset_network(asset_id: str, _: CurrentUser = Depends(require_role
 
     if focus_root_domain:
         root_regex = rf"(^|\\.){re.escape(focus_root_domain)}$"
+        # v2 assets use host_normalized, v1 used host
+        match_or_conditions.append({"host_normalized": {"$regex": root_regex, "$options": "i"}})
         match_or_conditions.append({"host": {"$regex": root_regex, "$options": "i"}})
     else:
         root_regex = ""
@@ -546,21 +692,29 @@ async def get_asset_network(asset_id: str, _: CurrentUser = Depends(require_role
         {
             "$project": {
                 "host": 1,
+                "host_normalized": 1,
                 "ip_addresses": 1,
+                "port_metadata": 1,
                 "open_ports": 1,
                 "services": 1,
+                "open_finding_types": 1,
                 "template_ids": 1,
                 "highest_severity": 1,
                 "vulnerability_count": 1,
                 "shared_ips": {"$setIntersection": ["$ip_addresses", focus_ip_addresses]},
                 "shares_root_domain": (
-                    {"$regexMatch": {"input": "$host", "regex": root_regex, "options": "i"}}
+                    {
+                        "$or": [
+                            {"$regexMatch": {"input": "$host_normalized", "regex": root_regex, "options": "i"}},
+                            {"$regexMatch": {"input": "$host", "regex": root_regex, "options": "i"}},
+                        ]
+                    }
                     if focus_root_domain
                     else False
                 ),
             }
         },
-        {"$sort": {"vulnerability_count": -1, "host": 1}},
+        {"$sort": {"vulnerability_count": -1, "host_normalized": 1, "host": 1}},
         {"$limit": MAX_NETWORK_NEIGHBORS},
     ]
 
@@ -599,7 +753,7 @@ async def get_asset_network(asset_id: str, _: CurrentUser = Depends(require_role
                             "host": "Shared infrastructure",
                             "ports": _format_detail_list(neighbor.get("open_ports", [])),
                             "services": _format_detail_list(neighbor.get("services", [])),
-                            "tech": _format_detail_list(neighbor.get("template_ids", [])),
+                            "tech": _format_detail_list(neighbor.get("open_finding_types") or neighbor.get("template_ids", [])),
                             "highest_severity": neighbor.get("highest_severity") or "--",
                         },
                     }
@@ -661,8 +815,19 @@ async def top_assets(
     pipeline = [
         {"$match": {"status": "Open"}},
         {
+            # Stage 1: compute effective_host and effective_severity
             "$addFields": {
+                # v2: target.host_normalized → v2: target.hostname → v1: host
+                "effective_host": {
+                    "$ifNull": ["$target.host_normalized", "$target.hostname", "$host", ""]
+                },
                 "effective_severity": {"$toLower": {"$ifNull": ["$override_severity", "$severity"]}},
+            }
+        },
+        {
+            # Stage 2: severity_rank MUST be a separate stage so it can reference
+            # the effective_severity field computed above.
+            "$addFields": {
                 "severity_rank": {
                     "$switch": {
                         "branches": [
@@ -684,7 +849,7 @@ async def top_assets(
         [
         {
             "$group": {
-                "_id": "$host",
+                "_id": "$effective_host",
                 "count": {"$sum": 1},
                 "highest_severity_rank": {"$max": "$severity_rank"},
             }
@@ -697,11 +862,15 @@ async def top_assets(
     results = await db.vulnerabilities.aggregate(pipeline).to_list(length=5)
     enriched_results = []
     for document in results:
-        asset = await db.assets.find_one({"host": document["_id"]}, {"_id": 1})
+        host_val = document["_id"]
+        asset = await db.assets.find_one(
+            {"$or": [{"host_normalized": host_val}, {"host": host_val}]},
+            {"_id": 1},
+        )
         enriched_results.append(
             {
                 "id": str(asset.get("_id")) if asset else None,
-                "host": document["_id"],
+                "host": host_val,
                 "count": document["count"],
                 "highest_severity": (
                     "critical"

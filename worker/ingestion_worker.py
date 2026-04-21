@@ -1,8 +1,5 @@
 import asyncio
-from datetime import datetime, timezone
-import json
 import logging
-import shutil
 import time
 from pathlib import Path
 
@@ -12,7 +9,8 @@ from watchdog.observers.polling import PollingObserver
 from app.config import get_settings
 from app.archive import archive_stale_vulnerabilities, purge_expired_archived_vulnerabilities
 from app.db import close_database, ensure_indexes, get_database
-from app.scanners import get_scanner_folders, get_scanner_for_file
+from app.engine.processor import ProcessingSummary, process_file as engine_process_file
+from app.adapters.registry import has_adapter
 from app.snapshots import recompute_dashboard_snapshots
 
 logging.basicConfig(
@@ -43,59 +41,6 @@ def _wait_until_file_ready(file_path: Path, retries: int = 10, delay_seconds: fl
         previous_size = current_size
         time.sleep(delay_seconds)
     return file_path.exists() and file_path.stat().st_size > 0
-
-
-def _build_archive_path(file_path: Path) -> Path:
-    relative_path = file_path.relative_to(incoming_dir)
-    candidate = archive_dir / relative_path
-    candidate.parent.mkdir(parents=True, exist_ok=True)
-    if not candidate.exists():
-        return candidate
-
-    timestamp = int(time.time())
-    return candidate.with_name(f"{candidate.stem}_{timestamp}{candidate.suffix}")
-
-
-def _build_quarantine_path(file_path: Path) -> Path:
-    relative_path = file_path.relative_to(incoming_dir)
-    candidate = quarantine_dir / relative_path
-    candidate.parent.mkdir(parents=True, exist_ok=True)
-    if not candidate.exists():
-        return candidate
-
-    timestamp = int(time.time())
-    return candidate.with_name(f"{candidate.stem}_{timestamp}{candidate.suffix}")
-
-
-def _write_quarantine_report(target_path: Path, error: Exception, attempts: int, reason: str) -> None:
-    report_path = target_path.with_suffix(f"{target_path.suffix}.error.json")
-    report = {
-        "reason": reason,
-        "error_type": type(error).__name__,
-        "error_message": str(error),
-        "attempts": attempts,
-        "quarantined_at": datetime.now(timezone.utc).isoformat(),
-    }
-    report_path.write_text(json.dumps(report, ensure_ascii=True, indent=2), encoding="utf-8")
-
-
-def _quarantine_file(file_path: Path, error: Exception, attempts: int, reason: str) -> None:
-    if not file_path.exists():
-        return
-    try:
-        target_path = _build_quarantine_path(file_path)
-        shutil.move(str(file_path), target_path)
-        _write_quarantine_report(target_path, error, attempts, reason)
-        logger.error(
-            "Quarantined %s to %s | reason=%s attempts=%s error=%s",
-            file_path.relative_to(incoming_dir),
-            target_path.relative_to(quarantine_dir),
-            reason,
-            attempts,
-            type(error).__name__,
-        )
-    except Exception:
-        logger.exception("Failed to quarantine %s after processing error", file_path.name)
 
 
 def _schedule_file_processing(file_path: Path) -> None:
@@ -138,49 +83,60 @@ async def handle_file(file_path: Path) -> bool:
             logger.warning("Skipping %s because the file was not ready in time", file_path.name)
             return False
 
-        scanner = get_scanner_for_file(file_path, incoming_dir)
-        logger.info(
-            "Processing %s via %s as %s",
-            file_path.relative_to(incoming_dir),
-            scanner.name,
-            scanner.detect_input_format(file_path),
+        # Derive scanner name from the immediate sub-folder under incoming/
+        relative_path = file_path.relative_to(incoming_dir)
+        if len(relative_path.parts) < 2:
+            logger.error("File %s is not inside a scanner folder — skipping", file_path.name)
+            return False
+        scanner_name = relative_path.parts[0]
+
+        logger.info("Processing %s via engine (scanner=%s)", file_path.relative_to(incoming_dir), scanner_name)
+
+        summary = await engine_process_file(
+            file_path=file_path,
+            scanner_name=scanner_name,
+            archive_root=archive_dir,
+            quarantine_root=quarantine_dir,
         )
-        summary = await scanner.process_file(file_path)
-        target_path = _build_archive_path(file_path)
-        shutil.move(str(file_path), target_path)
+
         failed_attempts.pop(file_path, None)
+
+        if summary.quarantined:
+            logger.warning(
+                "Quarantined %s | reason=%s",
+                file_path.name,
+                ", ".join(summary.errors),
+            )
+            return False
+
         logger.info(
-            "Archived %s to %s | processed=%s inserted=%s updated=%s skipped=%s resolved=%s assets=%s",
-            file_path.relative_to(incoming_dir),
-            target_path.relative_to(archive_dir),
+            "Processed %s | processed=%s inserted=%s updated=%s assets=%s",
+            file_path.name,
             summary.processed,
             summary.inserted,
             summary.updated,
-            summary.skipped,
-            summary.resolved,
             summary.assets_updated,
         )
         return summary.processed > 0
     except Exception as exc:
+        # engine_process_file() handles its own errors internally;
+        # this block only fires for unexpected bugs (e.g. scanner_name derivation).
         attempts = failed_attempts.get(file_path, 0) + 1
         failed_attempts[file_path] = attempts
 
-        if isinstance(exc, ValueError):
-            _quarantine_file(file_path, exc, attempts, "invalid-input")
-            failed_attempts.pop(file_path, None)
-            return False
-
         if attempts >= settings.ingest_max_retries:
-            _quarantine_file(file_path, exc, attempts, "max-retries-exceeded")
+            logger.error(
+                "Unexpected error processing %s after %s attempts — giving up: %s",
+                file_path.name, attempts, exc,
+            )
             failed_attempts.pop(file_path, None)
-            return False
-
-        logger.exception(
-            "Failed processing %s (attempt %s/%s). Will retry.",
-            file_path.name,
-            attempts,
-            settings.ingest_max_retries,
-        )
+        else:
+            logger.exception(
+                "Unexpected error processing %s (attempt %s/%s). Will retry.",
+                file_path.name,
+                attempts,
+                settings.ingest_max_retries,
+            )
         return False
     finally:
         processing_files.discard(file_path)
@@ -207,10 +163,14 @@ async def main_async() -> None:
     incoming_dir.mkdir(parents=True, exist_ok=True)
     archive_dir.mkdir(parents=True, exist_ok=True)
     quarantine_dir.mkdir(parents=True, exist_ok=True)
-    for scanner_folder in get_scanner_folders():
-        (incoming_dir / scanner_folder).mkdir(parents=True, exist_ok=True)
-        (archive_dir / scanner_folder).mkdir(parents=True, exist_ok=True)
-        (quarantine_dir / scanner_folder).mkdir(parents=True, exist_ok=True)
+
+    # Create sub-folders for every known adapter
+    from app.adapters.registry import list_adapters
+    for scanner_name in list_adapters():
+        (incoming_dir / scanner_name).mkdir(parents=True, exist_ok=True)
+        (archive_dir / scanner_name).mkdir(parents=True, exist_ok=True)
+        (quarantine_dir / scanner_name).mkdir(parents=True, exist_ok=True)
+
     logger.info(
         "Worker bootstrap ready | incoming=%s archive=%s quarantine=%s",
         incoming_dir,
@@ -228,7 +188,7 @@ async def main_async() -> None:
     observer = PollingObserver(timeout=1)
     observer.schedule(IncomingFileHandler(), str(incoming_dir), recursive=True)
     observer.start()
-    logger.info("Watching %s for new JSON files in scanner folders: %s", incoming_dir, ", ".join(get_scanner_folders()))
+    logger.info("Watching %s for new JSON files", incoming_dir)
     concurrency = max(1, int(settings.ingest_concurrency))
     consumers = [
         asyncio.create_task(queue_consumer(f"consumer-{index + 1}", snapshot_state))

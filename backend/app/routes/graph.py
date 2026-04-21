@@ -16,11 +16,13 @@ async def get_graph(_: CurrentUser = Depends(require_role("admin", "viewer"))):
     edges = []
 
     for asset in assets:
-        asset_id = str(asset.get("_id", asset.get("host", "unknown")))
+        asset_id = str(asset.get("_id", asset.get("host_normalized") or asset.get("host", "unknown")))
+        # Prefer host_normalized (v2) over host (v1) as display label
+        label = asset.get("host_normalized") or asset.get("host") or asset_id
         nodes.append(
             {
                 "id": asset_id,
-                "label": asset.get("host", asset_id),
+                "label": label,
                 "type": asset.get("type", "subdomain"),
                 "highest_severity": asset.get("highest_severity"),
                 "ip_addresses": asset.get("ip_addresses", []),

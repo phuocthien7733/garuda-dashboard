@@ -94,12 +94,28 @@ async def _build_tech_stack_snapshot(db, limit: int = 40) -> list[dict]:
         {
             "$match": {
                 "effective_severity": "info",
-                "host": {"$exists": True, "$ne": None},
-                "name": {"$exists": True, "$ne": None},
                 "status": "Open",
             }
         },
-        {"$group": {"_id": "$name", "hosts": {"$addToSet": "$host"}}},
+        {
+            "$addFields": {
+                "_canon_rule": {
+                    "$ifNull": [
+                        "$identity.standardized_rule_id",
+                        "$template-id",
+                        "$template_id",
+                    ]
+                },
+                "_canon_host": {"$ifNull": ["$target.host_normalized", "$host"]},
+            }
+        },
+        {
+            "$match": {
+                "_canon_rule": {"$ne": None, "$exists": True, "$nin": ["", None]},
+                "_canon_host": {"$ne": None, "$exists": True, "$nin": ["", None]},
+            }
+        },
+        {"$group": {"_id": "$_canon_rule", "hosts": {"$addToSet": "$_canon_host"}}},
         {"$project": {"_id": 0, "name": "$_id", "host_count": {"$size": "$hosts"}}},
         {"$sort": {"host_count": -1, "name": 1}},
         {"$limit": limit},

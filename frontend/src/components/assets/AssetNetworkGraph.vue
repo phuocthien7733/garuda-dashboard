@@ -214,7 +214,7 @@ function tooltipFormatter(params: any) {
         <div><span style="color:#94a3b8;font-weight:700;">IP:</span> <span style="color:#f8fafc;">${escapeHtml(detail.ip)}</span></div>
         <div><span style="color:#94a3b8;font-weight:700;">Ports:</span> <span style="color:#f8fafc;">${escapeHtml(detail.ports)}</span></div>
         <div><span style="color:#94a3b8;font-weight:700;">Services:</span> <span style="color:#f8fafc;">${escapeHtml(detail.services)}</span></div>
-        <div><span style="color:#94a3b8;font-weight:700;">Tech:</span> <span style="color:#f8fafc;">${escapeHtml(detail.tech)}</span></div>
+        <div><span style="color:#94a3b8;font-weight:700;">Finding Types:</span> <span style="color:#f8fafc;">${escapeHtml(detail.tech)}</span></div>
       </div>
     </div>
   `;

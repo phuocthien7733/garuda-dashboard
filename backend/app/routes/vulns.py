@@ -33,8 +33,59 @@ def _serialize_vulnerability(document: dict) -> dict:
     payload = jsonable_encoder(normalized)
     if mongo_id is not None:
         payload["id"] = str(mongo_id)
-    if payload.get("port") is not None:
+
+    # Flatten v2 UDM nested fields into top-level keys for API consumers.
+    # Falls back to v1 flat fields when schema_version < 2 or field is absent.
+    target = payload.get("target") or {}
+    identity = payload.get("identity") or {}
+    evidence = payload.get("evidence") or {}
+
+    # Canonical host surface (v2: target.host_normalized / v1: host)
+    if "host" not in payload or not payload["host"]:
+        payload["host"] = (
+            target.get("host_normalized")
+            or target.get("hostname")
+            or payload.get("host")
+            or ""
+        )
+
+    # v1 compatibility aliases surfaced at top level
+    if "name" not in payload or not payload["name"]:
+        payload["name"] = identity.get("name") or ""
+    if "template_id" not in payload or not payload["template_id"]:
+        payload["template_id"] = (
+            identity.get("standardized_rule_id")
+            or identity.get("raw_rule_id")
+            or payload.get("template-id")
+            or ""
+        )
+    if "matched_at" not in payload or not payload["matched_at"]:
+        payload["matched_at"] = (
+            evidence.get("matched_at")
+            or payload.get("matched-at")
+            or ""
+        )
+    if "ip" not in payload or not payload["ip"]:
+        payload["ip"] = target.get("ip") or payload.get("ip") or ""
+    if "port" not in payload or payload["port"] is None:
+        raw_port = target.get("port") or payload.get("port")
+        payload["port"] = str(raw_port) if raw_port is not None else None
+    else:
         payload["port"] = str(payload["port"])
+
+    # Flatten evidence fields (v2: evidence.request/response/curl_command → top-level)
+    # Falls back to v1 hyphenated keys when evidence object is absent.
+    if not payload.get("request"):
+        payload["request"] = evidence.get("request") or payload.get("request") or None
+    if not payload.get("response"):
+        payload["response"] = evidence.get("response") or payload.get("response") or None
+    if not payload.get("curl_command"):
+        payload["curl_command"] = (
+            evidence.get("curl_command")
+            or payload.get("curl-command")
+            or None
+        )
+
     return payload
 
 
@@ -128,12 +179,27 @@ async def _list_vulnerabilities_internal(
     if port:
         normalized_port = port.strip()
         if normalized_port:
-            conditions.append({"port": normalized_port})
+            try:
+                port_int = int(normalized_port)
+                conditions.append({
+                    "$or": [
+                        {"target.port": port_int},
+                        {"port": normalized_port},
+                    ]
+                })
+            except ValueError:
+                conditions.append({"port": normalized_port})
 
     if safe_search:
         conditions.append(
             {
                 "$or": [
+                    # v2 UDM field paths
+                    {"target.host_normalized": {"$regex": safe_search, "$options": "i"}},
+                    {"target.hostname": {"$regex": safe_search, "$options": "i"}},
+                    {"identity.name": {"$regex": safe_search, "$options": "i"}},
+                    {"identity.standardized_rule_id": {"$regex": safe_search, "$options": "i"}},
+                    # v1 backward-compat field paths
                     {"host": {"$regex": safe_search, "$options": "i"}},
                     {"name": {"$regex": safe_search, "$options": "i"}},
                     {"template_id": {"$regex": safe_search, "$options": "i"}},
@@ -340,7 +406,10 @@ async def patch_vulnerability(
     _: CurrentUser = Depends(require_role("admin")),
 ):
     db = get_database()
-    existing_vulnerability = await db.vulnerabilities.find_one({"fingerprint": vuln_id}, {"host": 1})
+    existing_vulnerability = await db.vulnerabilities.find_one(
+        {"fingerprint": vuln_id},
+        {"host": 1, "target": 1},
+    )
     if not existing_vulnerability:
         raise HTTPException(status_code=404, detail="Vulnerability not found.")
 
@@ -351,7 +420,11 @@ async def patch_vulnerability(
     update_fields["last_seen"] = datetime.now(timezone.utc)
     await db.vulnerabilities.update_one({"fingerprint": vuln_id}, {"$set": update_fields})
 
-    host = existing_vulnerability.get("host")
+    # Resolve host_normalized from v2 target or v1 flat field
+    host = (
+        (existing_vulnerability.get("target") or {}).get("host_normalized")
+        or existing_vulnerability.get("host")
+    )
     if host:
         await recalculate_asset(db, str(host))
     await mark_dashboard_snapshot_dirty(db, "vulnerability-patch")
@@ -385,7 +458,10 @@ async def archive_vulnerability(
     else:
         await db.vulnerabilities.delete_one({"fingerprint": vuln_id})
 
-    host = archived.get("host")
+    host = (
+        archived.get("target", {}).get("host_normalized")
+        or archived.get("host")
+    )
     if host:
         await recalculate_asset(db, str(host))
     await mark_dashboard_snapshot_dirty(db, "vulnerability-archive")
@@ -409,7 +485,7 @@ async def bulk_patch_vulnerabilities(
 
     matched_vulnerabilities = await db.vulnerabilities.find(
         {"fingerprint": {"$in": fingerprints}},
-        {"host": 1, "fingerprint": 1},
+        {"host": 1, "target": 1, "fingerprint": 1},
     ).to_list(length=None)
     if not matched_vulnerabilities:
         raise HTTPException(status_code=404, detail="No matching vulnerabilities found.")
@@ -420,7 +496,15 @@ async def bulk_patch_vulnerabilities(
         {"$set": update_fields},
     )
 
-    affected_hosts = sorted({str(item.get("host")) for item in matched_vulnerabilities if item.get("host")})
+    affected_hosts = sorted({
+        str(
+            (item.get("target") or {}).get("host_normalized")
+            or item.get("host")
+            or ""
+        )
+        for item in matched_vulnerabilities
+        if (item.get("target") or {}).get("host_normalized") or item.get("host")
+    })
     for host in affected_hosts:
         await recalculate_asset(db, host)
     await mark_dashboard_snapshot_dirty(db, "vulnerability-bulk-triage")

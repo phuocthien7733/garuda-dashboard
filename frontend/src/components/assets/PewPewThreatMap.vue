@@ -308,7 +308,7 @@ onBeforeUnmount(() => {
     <div class="flex flex-col gap-2 border-b border-white/10 pb-4 md:flex-row md:items-center md:justify-between">
       <div>
         <h2 class="text-xl font-semibold text-white">PewPew Global Threat Map</h2>
-        <p class="mt-1 text-sm text-slate-400">Cyber threat geolocation with neon tactical beacons for Red Team situational awareness.</p>
+        <p class="mt-1 text-sm text-slate-400">Geolocated IPs of internet-facing assets with active Critical, High, or Medium open findings.</p>
       </div>
       <div class="flex items-center gap-2 text-xs uppercase tracking-[0.16em] text-slate-300">
         <span class="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1">Nodes: {{ nodeCount }}</span>

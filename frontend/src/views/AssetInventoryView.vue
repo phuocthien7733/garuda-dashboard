@@ -314,10 +314,6 @@ onBeforeUnmount(() => {
         {{ errorMessage }}
       </div>
 
-      <div v-else-if="assets.length === 0" class="mt-6 rounded-[1.25rem] border border-dashed border-white/10 bg-slate-950/50 px-5 py-10 text-center text-sm text-slate-400">
-        No assets available in the inventory.
-      </div>
-
       <div v-else class="mt-6">
         <div class="space-y-3">
           <div class="grid gap-3 xl:grid-cols-4">
@@ -388,7 +384,11 @@ onBeforeUnmount(() => {
           </div>
         </div>
 
-        <div v-if="paginatedAssets.length === 0" class="mt-6 rounded-[1.25rem] border border-dashed border-white/10 bg-slate-950/50 px-5 py-10 text-center text-sm text-slate-400">
+        <div v-if="assets.length === 0 && stats.assets === 0" class="mt-6 rounded-[1.25rem] border border-dashed border-white/10 bg-slate-950/50 px-5 py-10 text-center text-sm text-slate-400">
+          No assets available in the inventory.
+        </div>
+
+        <div v-else-if="assets.length === 0" class="mt-6 rounded-[1.25rem] border border-dashed border-white/10 bg-slate-950/50 px-5 py-10 text-center text-sm text-slate-400">
           No assets match the current filters.
         </div>
 
@@ -452,7 +452,7 @@ onBeforeUnmount(() => {
         </table>
       </div>
 
-        <div v-if="paginatedAssets.length > 0" class="mt-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+        <div v-if="assets.length > 0" class="mt-5 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
           <p class="text-sm text-slate-400">
             Showing {{ (currentPage - 1) * pageSize + 1 }} - {{ Math.min(currentPage * pageSize, totalFiltered) }} of {{ totalFiltered }} assets.
           </p>

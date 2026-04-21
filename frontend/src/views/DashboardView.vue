@@ -473,15 +473,7 @@ function renderTrendChart() {
 }
 
 function formatTechLabel(name: string) {
-  return name
-    .replace(/\s*-\s*Detect$/i, "")
-    .replace(/\s+Detection$/i, "")
-    .replace(/\s+detect$/i, "")
-    .replace(/\s+version$/i, "")
-    .replace(/\s+version detect$/i, "")
-    .replace(/\s+End-of-Life$/i, "")
-    .replace(/\s+API$/i, "")
-    .trim();
+  return name.trim();
 }
 
 function renderTechStackChart() {
@@ -845,8 +837,8 @@ watch(selectedAssetSeverity, () => {
           <div class="min-h-[24.5rem] rounded-[1.75rem] border border-white/10 bg-slate-900/60 p-4 backdrop-blur">
             <div class="flex items-center justify-between gap-4">
               <div>
-                <h2 class="text-xl font-semibold text-white">Exposed Tech Stack</h2>
-                <p class="mt-1 text-sm text-slate-400">Technologies observed on internet-facing hosts based on informational detection findings.</p>
+                <h2 class="text-xl font-semibold text-white">Detect Rule Base</h2>
+                <p class="mt-1 text-sm text-slate-400">Top informational rule signatures detected across the attack surface, grouped by unique target hosts.</p>
               </div>
             </div>
 

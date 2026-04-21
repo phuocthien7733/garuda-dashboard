@@ -32,63 +32,48 @@ async def _build_map_nodes(limit: int) -> list[dict]:
     db = get_database()
     prefetch_limit = min(2500, max(limit * 3, 320))
 
+    # Query vulnerabilities directly — more accurate than stale `highest_severity` on assets.
+    # Only Critical / High / Medium open findings; v2 UDM + v1 flat field compatibility.
     pipeline = [
+        {"$match": {"status": "Open"}},
         {
-            "$match": {
-                "ip_addresses": {"$exists": True, "$type": "array", "$ne": []},
-                "vulnerability_count": {"$gt": 0},
-            }
-        },
-        {"$unwind": "$ip_addresses"},
-        {
-            "$project": {
-                "ip": {"$toString": "$ip_addresses"},
-                "host": "$host",
-                "severity_rank": {
-                    "$switch": {
-                        "branches": [
-                            {
-                                "case": {
-                                    "$eq": [{"$toLower": {"$ifNull": ["$highest_severity", ""]}}, "critical"]
-                                },
-                                "then": 4,
-                            },
-                            {
-                                "case": {
-                                    "$eq": [{"$toLower": {"$ifNull": ["$highest_severity", ""]}}, "high"]
-                                },
-                                "then": 3,
-                            },
-                            {
-                                "case": {
-                                    "$eq": [{"$toLower": {"$ifNull": ["$highest_severity", ""]}}, "medium"]
-                                },
-                                "then": 2,
-                            },
-                            {
-                                "case": {
-                                    "$eq": [{"$toLower": {"$ifNull": ["$highest_severity", ""]}}, "low"]
-                                },
-                                "then": 1,
-                            },
-                            {
-                                "case": {
-                                    "$eq": [{"$toLower": {"$ifNull": ["$highest_severity", ""]}}, "info"]
-                                },
-                                "then": 1,
-                            },
-                        ],
-                        "default": 0,
-                    }
+            # Stage 1: resolve canonical fields (cannot self-reference in same stage)
+            "$addFields": {
+                "effective_severity": {"$toLower": {"$ifNull": ["$override_severity", "$severity"]}},
+                # v2: target.ip → v1: ip
+                "effective_ip": {"$ifNull": ["$target.ip", "$ip", ""]},
+                # v2: target.host_normalized → v2: target.hostname → v1: host
+                "effective_host": {
+                    "$ifNull": ["$target.host_normalized", "$target.hostname", "$host", ""]
                 },
             }
         },
-        {"$match": {"ip": {"$ne": ""}, "severity_rank": {"$gt": 0}}},
+        {
+            "$match": {
+                "effective_severity": {"$in": ["critical", "high", "medium"]},
+                "effective_ip": {"$nin": [None, ""]},
+            }
+        },
+        {
+            # Stage 2: severity_rank uses effective_severity from stage 1
+            "$addFields": {
+                "severity_rank": {
+                    "$switch": {
+                        "branches": [
+                            {"case": {"$eq": ["$effective_severity", "critical"]}, "then": 4},
+                            {"case": {"$eq": ["$effective_severity", "high"]}, "then": 3},
+                            {"case": {"$eq": ["$effective_severity", "medium"]}, "then": 2},
+                        ],
+                        "default": 0,
+                    }
+                }
+            }
+        },
         {
             "$group": {
-                "_id": "$ip",
+                "_id": "$effective_ip",
                 "max_severity_rank": {"$max": "$severity_rank"},
-                "hosts": {"$addToSet": "$host"},
+                "hosts": {"$addToSet": "$effective_host"},
             }
         },
         {
@@ -103,20 +88,20 @@ async def _build_map_nodes(limit: int) -> list[dict]:
         {"$limit": prefetch_limit},
     ]
 
-    raw_nodes = await db.assets.aggregate(pipeline).to_list(length=prefetch_limit)
+    raw_nodes = await db.vulnerabilities.aggregate(pipeline).to_list(length=prefetch_limit)
     nodes: list[dict] = []
     for document in raw_nodes:
         ip_value = str(document.get("ip", "")).strip()
         severity_rank = int(document.get("max_severity_rank", 0) or 0)
         asset_count = int(document.get("asset_count", 0) or 0)
-        if not ip_value or severity_rank <= 0:
+        if not ip_value or severity_rank < 2:
             continue
 
         geoip_record = lookup_geoip(ip_value)
         if geoip_record is None:
             continue
 
-        severity = RANK_TO_SEVERITY.get(severity_rank, "Low")
+        severity = RANK_TO_SEVERITY.get(severity_rank, "Medium")
         nodes.append(
             map_payload_node(
                 ip_value=ip_value,

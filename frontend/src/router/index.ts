@@ -4,6 +4,8 @@ import { useAuthStore } from "@/stores/auth";
 import AssetInventoryView from "@/views/AssetInventoryView.vue";
 import AssetProfileView from "@/views/AssetProfileView.vue";
 import DashboardView from "@/views/DashboardView.vue";
+import HuntingMapDetailView from "@/views/HuntingMapDetailView.vue";
+import HuntingMapListView from "@/views/HuntingMapListView.vue";
 import LoginView from "@/views/LoginView.vue";
 import MfaVerifyView from "@/views/MfaVerifyView.vue";
 import UserProfileView from "@/views/UserProfileView.vue";
@@ -44,6 +46,18 @@ const router = createRouter({
       path: "/vulnerabilities",
       name: "vulnerabilities",
       component: VulnerabilityInventoryView,
+    },
+    {
+      path: "/hunting-maps",
+      name: "hunting-maps",
+      component: HuntingMapListView,
+      meta: { adminOnly: true },
+    },
+    {
+      path: "/hunting-maps/:id",
+      name: "hunting-map-detail",
+      component: HuntingMapDetailView,
+      meta: { adminOnly: true },
     },
     {
       path: "/profile",

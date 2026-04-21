@@ -1,0 +1,56 @@
+{
+  "scans": [
+    {
+      "info": {
+        "host": "https://shop.example.com",
+        "start_date": "2026-04-01T10:00:00Z"
+      },
+      "vulnerability_types": [
+        {
+          "app_id": "db/vulnerabilities/acx/2004/XSS.yaml",
+          "name": "Cross-site Scripting",
+          "type": "xss",
+          "severity": 3,
+          "tags": ["xss", "injection"],
+          "loc_id": 1
+        },
+        {
+          "app_id": "db/vulnerabilities/acx/1001/SQLi.yaml",
+          "name": "SQL Injection",
+          "type": "sqli",
+          "severity": 4,
+          "tags": ["sqli", "injection"],
+          "loc_id": 2
+        },
+        {
+          "app_id": "db/vulnerabilities/acx/5001/SSL_Weak.yaml",
+          "name": "Weak TLS Configuration",
+          "type": "ssl_weak",
+          "severity": 2,
+          "tags": ["ssl", "tls"],
+          "loc_id": 3
+        }
+      ],
+      "locations": [
+        {
+          "loc_id": 1,
+          "url": "https://shop.example.com/search?q=test",
+          "path": "/search",
+          "input_data": [{"name": "q", "type": "query"}]
+        },
+        {
+          "loc_id": 2,
+          "url": "https://shop.example.com/products?id=1",
+          "path": "/products",
+          "input_data": [{"name": "id", "type": "query"}]
+        },
+        {
+          "loc_id": 3,
+          "url": "https://shop.example.com",
+          "path": "/",
+          "input_data": []
+        }
+      ]
+    }
+  ]
+}

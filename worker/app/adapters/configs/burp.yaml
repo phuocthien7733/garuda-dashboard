@@ -1,0 +1,85 @@
+# Burp Suite Professional — "Save items" as JSON
+# Root structure: {"issue_events": [{"issue": {...}, "type": "issue_found"}], "target": [...]}
+scanner: burp
+finding_type_default: vulnerability
+
+input:
+  format: json_object
+
+# Structural fingerprint — validated BEFORE extraction
+# Burp: root object must have 'issue_events' array
+input_validation:
+  required_paths:
+    - "$.issue_events[0].issue"   # every Burp export has at least one issue event
+  forbidden_paths:
+    - "$[0].template-id"          # would indicate Nuclei
+    - "$.export.scans"            # would indicate Invicti
+
+extraction:
+  mode: envelope
+  findings_path: "$.issue_events[*].issue"
+  context_inject:
+    scan_host: "$.target[0].host"
+
+finding_type_rules:
+  - if_name_contains: ["Cross-site scripting", "SQL injection", "Command injection", "SSRF", "XXE", "path traversal"]
+    set_type: vulnerability
+  - if_name_contains: ["SSL", "TLS", "certificate", "cipher"]
+    set_type: ssl_finding
+  - if_name_contains: ["Information disclosure", "path disclosure", "directory listing"]
+    set_type: exposure
+  - default: vulnerability
+
+required_fields:
+  - target.hostname
+  - identity.standardized_rule_id
+  - severity
+
+evidence_limits:
+  max_response_size_kb: 512
+  max_raw_size_kb: 1024
+
+mappings:
+  target.url:      "$.path"
+  target.hostname: "$.ctx_scan_host"
+  target.port:
+    source: "$.origin"
+    transform:
+      - type: url_port_only
+  target.protocol:
+    source: "$.origin"
+    transform:
+      - type: url_scheme_only
+
+  identity.raw_rule_id: "$.type"
+  identity.standardized_rule_id:
+    source: "$.name"
+    transform:
+      - type: slugify
+        prefix: "burp:"
+  identity.name:     "$.name"
+  identity.category:
+    source: "$.issueType"
+    transform:
+      - type: slugify
+
+  severity:
+    source: "$.severity"
+    transform:
+      - type: string_map
+        map:
+          high:           high
+          medium:         medium
+          low:            low
+          information:    info
+          false_positive: info
+
+  evidence.request:    "$.requestResponse[0].request"
+  evidence.response:   "$.requestResponse[0].response"
+  evidence.matched_at: "$.path"
+  evidence.raw:        "$"
+
+  tags:
+    static:
+      - "burp"
+      - "dast"

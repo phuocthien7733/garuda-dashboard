@@ -48,6 +48,14 @@ const menuItems: MenuItem[] = [
     iconPath: "M12 3l8.25 4.5v9L12 21l-8.25-4.5v-9L12 3zm0 5.25v4.5m0 3h.008",
   },
   {
+    name: "hunting-maps",
+    label: "Hunting",
+    description: "Red Team campaigns",
+    route: { name: "hunting-maps" },
+    adminOnly: true,
+    iconPath: "M15 10.5a3 3 0 1 1-6 0 3 3 0 0 1 6 0ZM12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2Zm0 3a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm-5 9c0-2.5 3.5-4 5-4s5 1.5 5 4",
+  },
+  {
     name: "users",
     label: "Users",
     description: "Admin only",
@@ -72,6 +80,10 @@ function isActive(item: MenuItem) {
 
   if (item.route.name === "assets") {
     return route.name === "assets" || route.name === "asset-profile";
+  }
+
+  if (item.route.name === "hunting-maps") {
+    return route.name === "hunting-maps" || route.name === "hunting-map-detail";
   }
 
   return route.name === item.route.name;

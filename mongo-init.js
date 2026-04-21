@@ -26,7 +26,7 @@ if (shouldSeedUsers) {
       email: process.env.MONGO_SEED_ADMIN_EMAIL || "administrator@example.com",
       password_hash:
         process.env.MONGO_SEED_ADMIN_PASSWORD_HASH ||
-        "$2b$12$qQRrPIK9juBtQgwtsr7wwu47bRN3N0t3PMGSkLuHhR3aMmxPdkc7K",
+        "$2b$12$TNlvWs72Rx4LrNPGcYpP4ewR9JlFyclLVQ7mNHJ7BnV1a0KKTHHtS",
       role: "admin",
       mfa_enabled: false,
       created_at: new Date(),

@@ -124,12 +124,30 @@ async def build_live_tech_stack(db, limit: int = 40):
         {
             "$match": {
                 "effective_severity": "info",
-                "host": {"$exists": True, "$ne": None},
-                "name": {"$exists": True, "$ne": None},
                 "status": "Open",
             }
         },
-        {"$group": {"_id": "$name", "hosts": {"$addToSet": "$host"}}},
+        {
+            "$addFields": {
+                # Resolve canonical rule id: v2 identity.standardized_rule_id → v1 template-id / template_id
+                "_canon_rule": {
+                    "$ifNull": [
+                        "$identity.standardized_rule_id",
+                        "$template-id",
+                        "$template_id",
+                    ]
+                },
+                # Resolve canonical host: v2 target.host_normalized → v1 host
+                "_canon_host": {"$ifNull": ["$target.host_normalized", "$host"]},
+            }
+        },
+        {
+            "$match": {
+                "_canon_rule": {"$ne": None, "$exists": True, "$nin": ["", None]},
+                "_canon_host": {"$ne": None, "$exists": True, "$nin": ["", None]},
+            }
+        },
+        {"$group": {"_id": "$_canon_rule", "hosts": {"$addToSet": "$_canon_host"}}},
         {"$project": {"_id": 0, "name": "$_id", "host_count": {"$size": "$hosts"}}},
         {"$sort": {"host_count": -1, "name": 1}},
         {"$limit": limit},

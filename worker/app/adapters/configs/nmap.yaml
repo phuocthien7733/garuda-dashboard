@@ -1,0 +1,61 @@
+scanner: nmap
+finding_type_default: port_service
+
+input:
+  format: json_array
+
+# Structural fingerprint — validated BEFORE extraction
+# Nmap JSON: array of host objects with 'ip' and 'ports'
+input_validation:
+  required_paths:
+    - "$[0].ip"     # every Nmap JSON host has an ip field
+  forbidden_paths:
+    - "$[0].template-id"   # would indicate Nuclei
+    - "$.export"           # would indicate Invicti
+    - "$.issue_events"     # would indicate Burp Suite
+
+extraction:
+  mode: flat
+  findings_path: "$[*]"
+
+finding_type_rules:
+  - default: port_service
+
+required_fields:
+  - target.ip
+  - identity.standardized_rule_id
+
+evidence_limits:
+  max_response_size_kb: 128
+  max_raw_size_kb: 512
+
+mappings:
+  target.ip:       "$.address"
+  target.hostname: "$.hostname"
+  target.port:
+    source: "$.port"
+    transform:
+      - type: cast_int
+  target.protocol: "$.protocol"
+
+  identity.raw_rule_id: "$.service.name"
+  identity.standardized_rule_id:
+    source: "$.service.name"
+    transform:
+      - type: slugify
+        prefix: "nmap:"
+  identity.name:     "$.service.name"
+  identity.category: "'port_open'"
+
+  severity: "'info'"
+
+  evidence.matched_at:
+    source: "$.service.version"
+  evidence.raw: "$"
+
+  tags:
+    source:
+      - "$.service.product"
+      - "$.service.extrainfo"
+    transform:
+      - type: filter_empty
