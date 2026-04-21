@@ -59,7 +59,7 @@ async function submitLogin() {
       <div class="relative z-10 max-w-xl">
         <div class="inline-flex items-center gap-3 rounded-full border border-red-400/20 bg-red-500/10 px-4 py-2 text-xs font-semibold uppercase tracking-[0.28em] text-red-200">
           <span class="h-2 w-2 rounded-full bg-red-400 shadow-[0_0_16px_rgba(248,113,113,0.9)]" />
-          T&W Falcon
+          T&W Garuda
         </div>
 
         <div class="mt-8 flex items-center gap-5">

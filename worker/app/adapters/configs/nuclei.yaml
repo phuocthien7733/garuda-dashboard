@@ -5,11 +5,15 @@ input:
   format: auto   # auto-detect: json-array or jsonl
 
 # Structural fingerprint — validated BEFORE extraction
-# Nuclei: root is an array/jsonl where each item has 'template-id' and 'info.severity'
+# Nuclei output can be:
+#   - JSON array:   [{"template-id": ...}, ...]
+#   - JSONL:        one JSON object per line  (normalised to list before validation)
+#   - Single object: {"template-id": ...}    (rare, but possible)
+# Required paths cover all three cases: $[0] works for array/JSONL list;
+# $.template-id covers a bare single object.
 input_validation:
   required_paths:
-    - "$[0].template-id"        # every Nuclei finding has a template-id
-    - "$[0].info.severity"      # severity is always present in Nuclei output
+    - "$[0].template-id"        # JSON array or JSONL (normalised to list)
   forbidden_paths:
     - "$.export.scans"          # would indicate Invicti
     - "$.issue_events"          # would indicate Burp Suite

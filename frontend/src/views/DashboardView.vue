@@ -726,7 +726,7 @@ watch(selectedAssetSeverity, () => {
 </script>
 
 <template>
-  <AppShell eyebrow="T&W Falcon" title="External Attack Surface Management">
+  <AppShell eyebrow="T&W Garuda" title="External Attack Surface Management">
         <section class="mt-4 grid gap-4 md:grid-cols-2 xl:grid-cols-5">
           <article class="rounded-[1.5rem] border border-white/10 bg-white/5 p-4 backdrop-blur">
             <p class="text-xs uppercase tracking-[0.22em] text-slate-400">Assets</p>

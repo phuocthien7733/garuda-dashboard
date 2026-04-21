@@ -2,7 +2,7 @@ import ipaddress
 
 import tldextract
 
-_extractor = tldextract.TLDExtract(suffix_list_urls=None)
+_extractor = tldextract.TLDExtract(suffix_list_urls=None, cache_dir=None)
 
 
 def extract_apex_domain(hostname: str | None) -> str:

@@ -95,7 +95,7 @@ onMounted(() => {
 
 <template>
   <AppShell
-    eyebrow="T&W Falcon"
+    eyebrow="T&W Garuda"
     title="Hunting Maps"
     description="Build campaign maps for Red Team operations. Select assets, visualize attack surface, and prioritize targets."
   >

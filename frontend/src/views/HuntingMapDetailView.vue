@@ -230,7 +230,7 @@ onBeforeUnmount(() => {
 
 <template>
   <AppShell
-    eyebrow="T&W Falcon"
+    eyebrow="T&W Garuda"
     :title="mapMeta?.name || 'Hunting Map'"
     :description="mapMeta?.description || 'Loading...'"
   >

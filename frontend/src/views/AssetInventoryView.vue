@@ -271,7 +271,7 @@ onBeforeUnmount(() => {
 
 <template>
   <AppShell
-    eyebrow="T&W Falcon"
+    eyebrow="T&W Garuda"
     title="Asset Inventory"
     description="Complete visibility across internet-facing assets with quick access to exposure details and host-level context."
   >

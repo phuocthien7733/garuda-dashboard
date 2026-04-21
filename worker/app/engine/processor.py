@@ -68,6 +68,10 @@ def _validate_scanner_fingerprint(
     """
     Load the raw document and check required_paths / forbidden_paths.
     Returns a list of failure messages (empty = valid).
+
+    Supports both JSON (array or object) and JSONL (one object per line).
+    JSONL files are normalised to a list so JSONPath expressions like
+    ``$[0].field`` work the same as for JSON-array files.
     """
     val_cfg = adapter.input_validation
     if not val_cfg.required_paths and not val_cfg.forbidden_paths:
@@ -75,7 +79,13 @@ def _validate_scanner_fingerprint(
 
     try:
         import json
-        doc = json.loads(file_path.read_text(encoding="utf-8"))
+        content = file_path.read_text(encoding="utf-8").strip()
+        try:
+            doc = json.loads(content)
+        except json.JSONDecodeError:
+            # Likely JSONL — parse line by line and treat result as a list
+            lines = [l for l in content.splitlines() if l.strip()]
+            doc = [json.loads(l) for l in lines]
     except Exception as exc:
         return [f"Cannot parse file for fingerprint check: {exc}"]
 

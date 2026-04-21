@@ -641,7 +641,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <AppShell eyebrow="T&W Falcon" :title="pageTitle" :description="pageDescription">
+  <AppShell eyebrow="T&W Garuda" :title="pageTitle" :description="pageDescription">
     <template #header-actions>
       <button
         v-if="assetId"
