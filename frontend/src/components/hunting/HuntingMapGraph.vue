@@ -49,11 +49,21 @@ function isIpHub(name: string): boolean {
   return /^(\d{1,3}\.){3}\d{1,3}(\/\d+)?$/.test(name.trim());
 }
 
+// Campaign tag colors (outer ring on tagged nodes)
+const TAG_COLORS: Record<string, string> = {
+  investigating:  "#f59e0b",
+  accepted_risk:  "#64748b",
+  resolved:       "#22c55e",
+};
+
+export type NodeTagMap = Record<string, { tag: string; set_by: string; set_at: string | null }>;
+
 const props = defineProps<{
   nodes: GraphNode[];
   links: GraphLink[];
   loading?: boolean;
   highlightedHubId?: string | null;
+  nodeTags?: NodeTagMap;
 }>();
 
 const emit = defineEmits<{
@@ -187,20 +197,27 @@ const echartsData = computed(() => {
         fontSize: n.is_neighbor ? 11 : 13,
         color: n.is_neighbor ? "rgba(255,255,255,0.4)" : "rgba(255,255,255,0.9)",
       },
-      itemStyle: {
-        color: gradientColor,
-        opacity,
-        borderColor: isHub
+      itemStyle: (() => {
+        const nodeTag = props.nodeTags?.[n.id]?.tag;
+        const tagColor = nodeTag ? TAG_COLORS[nodeTag] : null;
+        // Tagged asset nodes get a thick colored border ring
+        const baseBorderColor = isHub
           ? (highlightedHub === n.id
             ? (SEVERITY_COLORS[hubHighestSeverity.value[n.id] || "info"] + "cc")
             : (isDimmedHub ? "#2e3a4e" : hubColor + "99"))
-          : "rgba(255,255,255,0.7)",
-        borderWidth: isHub ? (highlightedHub === n.id ? 2 : 1) : 2.5,
-        shadowColor: isHub
-          ? (hubShadow > 0 ? sevColor + "cc" : undefined)
-          : `${sevColor}99`,
-        shadowBlur: isHub ? hubShadow : 18,
-      },
+          : "rgba(255,255,255,0.7)";
+        return {
+          color: gradientColor,
+          opacity,
+          borderColor: (!isHub && tagColor) ? tagColor : baseBorderColor,
+          borderWidth: (!isHub && tagColor) ? 4 : (isHub ? (highlightedHub === n.id ? 2 : 1) : 2.5),
+          borderType: (!isHub && tagColor) ? ("solid" as const) : ("solid" as const),
+          shadowColor: isHub
+            ? (hubShadow > 0 ? sevColor + "cc" : undefined)
+            : (tagColor ? tagColor + "88" : `${sevColor}99`),
+          shadowBlur: isHub ? hubShadow : (tagColor ? 22 : 18),
+        };
+      })(),
     };
   });
 
@@ -439,6 +456,11 @@ watch(() => props.highlightedHubId, () => {
   // Only color/opacity change — keep pinned positions intact
   if (chart) updateChart(false);
 });
+
+watch(() => props.nodeTags, () => {
+  // Tag changed — re-render borders without disturbing layout
+  if (chart) updateChart(false);
+}, { deep: true });
 
 onMounted(() => {
   initChart();

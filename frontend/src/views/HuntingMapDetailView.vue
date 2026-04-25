@@ -4,11 +4,13 @@ import { useRoute, useRouter } from "vue-router";
 
 import AppShell from "@/components/layout/AppShell.vue";
 import HuntingMapAssetPicker from "@/components/hunting/HuntingMapAssetPicker.vue";
+import HuntingMapChat from "@/components/hunting/HuntingMapChat.vue";
 import HuntingMapGraph from "@/components/hunting/HuntingMapGraph.vue";
 import HuntingMapVulnSidebar from "@/components/hunting/HuntingMapVulnSidebar.vue";
 import api from "@/services/api";
 
 import type { GraphNode, GraphLink } from "@/components/hunting/HuntingMapGraph.vue";
+import type { NodeTagMap } from "@/components/hunting/HuntingMapGraph.vue";
 
 type MapMeta = {
   id: string;
@@ -48,6 +50,7 @@ const lastRefreshed = ref<Date | null>(null);
 
 const showAssetPicker = ref(false);
 const selectedAssetId = ref<string | null>(null);
+const selectedNodeId = ref<string | null>(null);
 const selectedAssetHost = ref("");
 
 const showEditModal = ref(false);
@@ -57,7 +60,11 @@ const editSaving = ref(false);
 
 const removingAssets = ref(false);
 
+const showChat = ref(false);
+const nodeTags = ref<NodeTagMap>({});
+
 const existingAssetIds = computed(() => mapMeta.value?.asset_ids ?? []);
+const selectedNodeTag = computed(() => selectedNodeId.value ? (nodeTags.value[selectedNodeId.value]?.tag ?? null) : null);
 
 const statCards = computed(() => [
   { label: "Assets", value: stats.value.total_assets, classes: "border-white/10 bg-white/[0.04] text-white" },
@@ -105,6 +112,33 @@ async function fetchGraph() {
   }
 }
 
+async function fetchNodeTags() {
+  try {
+    const { data } = await api.get(`/hunting-maps/${encodeURIComponent(mapId.value)}/node-tags`);
+    nodeTags.value = data.tags ?? {};
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+async function setNodeTag(nodeId: string, tag: string) {
+  try {
+    await api.put(`/hunting-maps/${encodeURIComponent(mapId.value)}/nodes/${encodeURIComponent(nodeId)}/tag`, { tag, node_name: selectedAssetHost.value || undefined });
+    await fetchNodeTags();
+  } catch (error) {
+    console.error(error);
+  }
+}
+
+async function removeNodeTag(nodeId: string) {
+  try {
+    await api.delete(`/hunting-maps/${encodeURIComponent(mapId.value)}/nodes/${encodeURIComponent(nodeId)}/tag`, { params: { node_name: selectedAssetHost.value || undefined } });
+    await fetchNodeTags();
+  } catch (error) {
+    console.error(error);
+  }
+}
+
 async function refreshMap() {
   refreshing.value = true;
   try {
@@ -148,15 +182,18 @@ function onNodeClick(node: GraphNode) {
   if (node.is_neighbor) return;
   if (selectedAssetId.value === node.detail?.asset_id) {
     selectedAssetId.value = null;
+    selectedNodeId.value = null;
     selectedAssetHost.value = "";
     return;
   }
   selectedAssetId.value = node.detail?.asset_id ?? null;
+  selectedNodeId.value = node.id;
   selectedAssetHost.value = node.detail?.host ?? node.name;
 }
 
 function dismissSidebar() {
   selectedAssetId.value = null;
+  selectedNodeId.value = null;
   selectedAssetHost.value = "";
 }
 
@@ -219,7 +256,7 @@ onMounted(async () => {
   window.addEventListener("keydown", handleEscape);
   document.addEventListener("fullscreenchange", onFullscreenChange);
   await fetchMeta();
-  await fetchGraph();
+  await Promise.all([fetchGraph(), fetchNodeTags()]);
 });
 
 onBeforeUnmount(() => {
@@ -234,8 +271,13 @@ onBeforeUnmount(() => {
     :title="mapMeta?.name || 'Hunting Map'"
     :description="mapMeta?.description || 'Loading...'"
   >
+    <!-- Toolbar + Graph in one flex-col block that fills remaining viewport height -->
+    <div
+      class="mt-4 flex flex-col gap-4"
+      style="height: calc(100vh - 40px - 96px - 1rem)"
+    >
     <!-- Toolbar -->
-    <section class="mt-4 rounded-[1.25rem] border border-white/10 bg-slate-900/65 px-5 py-3 backdrop-blur-xl">
+    <section class="shrink-0 rounded-[1.25rem] border border-white/10 bg-slate-900/65 px-5 py-3 backdrop-blur-xl">
       <div class="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div class="flex flex-wrap items-center gap-2">
           <button
@@ -297,6 +339,14 @@ onBeforeUnmount(() => {
           >
             {{ refreshing ? 'Refreshing...' : '↻ Refresh' }}
           </button>
+
+          <button
+            type="button"
+            class="rounded-full border border-purple-400/20 bg-purple-400/10 px-4 py-2 text-xs font-semibold text-purple-100 transition hover:border-purple-400/35 hover:bg-purple-400/18"
+            @click="showChat = !showChat"
+          >
+            💬 Discussion
+          </button>
         </div>
       </div>
     </section>
@@ -304,14 +354,14 @@ onBeforeUnmount(() => {
     <!-- Graph + Sidebar workspace -->
     <section
       ref="graphSection"
-      class="relative mt-4 overflow-hidden rounded-[1.6rem] border border-white/10 bg-slate-950/70 backdrop-blur-xl"
-      style="height: calc(100vh - 16rem)"
+      class="relative min-h-0 flex-1 overflow-hidden rounded-[1.6rem] border border-white/10 bg-slate-950/70 backdrop-blur-xl"
     >
       <HuntingMapGraph
         :nodes="nodes"
         :links="links"
         :loading="graphLoading"
         :highlighted-hub-id="highlightedHubId"
+        :node-tags="nodeTags"
         @node-click="onNodeClick"
         @graph-click="dismissSidebar"
         @hub-click="onHubClick"
@@ -321,7 +371,10 @@ onBeforeUnmount(() => {
         :map-id="mapId"
         :asset-id="selectedAssetId"
         :asset-host="selectedAssetHost"
+        :current-tag="selectedNodeTag"
         @close="dismissSidebar"
+        @set-tag="(tag: string) => selectedNodeId && setNodeTag(selectedNodeId, tag)"
+        @remove-tag="() => selectedNodeId && removeNodeTag(selectedNodeId)"
       />
 
       <!-- Legend -->
@@ -352,6 +405,16 @@ onBeforeUnmount(() => {
           <div class="mt-1 flex items-center gap-2 text-xs text-slate-500">
             <span class="inline-block h-3 w-3 rounded-full border border-dashed border-slate-500 bg-transparent opacity-50" /> Neighbor (auto)
           </div>
+          <p class="mt-2 text-[10px] font-semibold uppercase tracking-[0.22em] text-slate-500">Tags</p>
+          <div class="flex items-center gap-2 text-xs text-slate-300">
+            <span class="inline-block h-3 w-3 rounded-full border-2 border-amber-400 bg-transparent" /> Investigating
+          </div>
+          <div class="flex items-center gap-2 text-xs text-slate-300">
+            <span class="inline-block h-3 w-3 rounded-full border-2 border-slate-500 bg-transparent" /> Accepted risk
+          </div>
+          <div class="flex items-center gap-2 text-xs text-slate-300">
+            <span class="inline-block h-3 w-3 rounded-full border-2 border-green-500 bg-transparent" /> Resolved
+          </div>
         </div>
       </div>
 
@@ -372,6 +435,7 @@ onBeforeUnmount(() => {
         </svg>
       </button>
     </section>
+    </div><!-- end toolbar+graph flex-col wrapper -->
 
     <!-- Asset Picker modal -->
     <HuntingMapAssetPicker
@@ -429,5 +493,12 @@ onBeforeUnmount(() => {
         </div>
       </div>
     </div>
+
+    <!-- Discussion chat popup -->
+    <HuntingMapChat
+      :map-id="mapId"
+      :visible="showChat"
+      @close="showChat = false"
+    />
   </AppShell>
 </template>

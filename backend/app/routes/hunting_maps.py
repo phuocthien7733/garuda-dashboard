@@ -179,13 +179,21 @@ async def update_map(
 
 
 @router.delete("/hunting-maps/{map_id}")
-async def delete_map(map_id: str, _: CurrentUser = Depends(require_role("admin"))):
+async def delete_map(map_id: str, user: CurrentUser = Depends(require_role("admin"))):
     if not ObjectId.is_valid(map_id):
         raise HTTPException(404, "Hunting map not found.")
     db = get_database()
+    map_doc = await db.hunting_maps.find_one({"_id": ObjectId(map_id)}, {"created_by": 1})
+    if not map_doc:
+        raise HTTPException(404, "Hunting map not found.")
+    if map_doc.get("created_by") != user.username:
+        raise HTTPException(403, "Only the creator of this map can delete it.")
     result = await db.hunting_maps.delete_one({"_id": ObjectId(map_id)})
     if result.deleted_count == 0:
         raise HTTPException(404, "Hunting map not found.")
+    # Cascade-delete all related data
+    await db.map_comments.delete_many({"map_id": map_id})
+    await db.map_node_tags.delete_many({"map_id": map_id})
     return {"ok": True}
 
 
@@ -536,6 +544,154 @@ def _serialize_vulnerability(doc: dict) -> dict:
     raw_port = target.get("port") or payload.get("port")
     payload["port"] = str(raw_port) if raw_port is not None else None
     return payload
+
+
+# ── Map Comments (team discussion) ───────────────────────────────────────────
+
+VALID_NODE_TAGS = {"open", "investigating", "accepted_risk", "resolved"}
+
+
+class PostCommentRequest(BaseModel):
+    content: str = Field(..., min_length=1, max_length=4000)
+
+
+class SetNodeTagRequest(BaseModel):
+    tag: str = Field(..., min_length=1, max_length=30)
+    node_name: str | None = Field(default=None, max_length=255)
+
+
+@router.get("/hunting-maps/{map_id}/comments")
+async def list_comments(
+    map_id: str,
+    _: CurrentUser = Depends(require_role("admin")),
+):
+    """Return all comments for a hunting map, ordered oldest-first."""
+    if not ObjectId.is_valid(map_id):
+        raise HTTPException(404, "Hunting map not found.")
+    db = get_database()
+    cursor = db.map_comments.find({"map_id": map_id}).sort("created_at", 1)
+    docs = await cursor.to_list(length=1000)
+    return {"items": [_serialize_comment(d) for d in docs]}
+
+
+@router.post("/hunting-maps/{map_id}/comments", status_code=201)
+async def post_comment(
+    map_id: str,
+    body: PostCommentRequest,
+    user: CurrentUser = Depends(require_role("admin")),
+):
+    """Post a new comment to the hunting map discussion thread."""
+    if not ObjectId.is_valid(map_id):
+        raise HTTPException(404, "Hunting map not found.")
+    db = get_database()
+    map_doc = await db.hunting_maps.find_one({"_id": ObjectId(map_id)}, {"_id": 1})
+    if not map_doc:
+        raise HTTPException(404, "Hunting map not found.")
+    now = datetime.now(timezone.utc)
+    doc = {
+        "map_id": map_id,
+        "author": user.username,
+        "content": body.content.strip(),
+        "type": "message",
+        "created_at": now,
+    }
+    result = await db.map_comments.insert_one(doc)
+    doc["_id"] = result.inserted_id
+    return _serialize_comment(doc)
+
+
+def _serialize_comment(doc: dict) -> dict:
+    return {
+        "id": str(doc["_id"]),
+        "map_id": doc.get("map_id", ""),
+        "author": doc.get("author", ""),
+        "content": doc.get("content", ""),
+        "type": doc.get("type", "message"),
+        "created_at": doc["created_at"].isoformat() if isinstance(doc.get("created_at"), datetime) else None,
+    }
+
+
+# ── Node Tags (per-campaign status) ─────────────────────────────────────────
+
+
+@router.get("/hunting-maps/{map_id}/node-tags")
+async def list_node_tags(
+    map_id: str,
+    _: CurrentUser = Depends(require_role("admin")),
+):
+    """Return all node tags for a hunting map as {node_id: tag, ...}."""
+    if not ObjectId.is_valid(map_id):
+        raise HTTPException(404, "Hunting map not found.")
+    db = get_database()
+    cursor = db.map_node_tags.find({"map_id": map_id})
+    docs = await cursor.to_list(length=2000)
+    tags: dict[str, dict] = {}
+    for d in docs:
+        tags[d["node_id"]] = {
+            "tag": d["tag"],
+            "set_by": d.get("set_by", ""),
+            "set_at": d["set_at"].isoformat() if isinstance(d.get("set_at"), datetime) else None,
+        }
+    return {"tags": tags}
+
+
+@router.put("/hunting-maps/{map_id}/nodes/{node_id}/tag")
+async def set_node_tag(
+    map_id: str,
+    node_id: str,
+    body: SetNodeTagRequest,
+    user: CurrentUser = Depends(require_role("admin")),
+):
+    """Set or update the campaign status tag for a specific node."""
+    tag = body.tag.strip().lower()
+    if tag not in VALID_NODE_TAGS:
+        raise HTTPException(400, f"Invalid tag. Must be one of: {', '.join(sorted(VALID_NODE_TAGS))}")
+    if not ObjectId.is_valid(map_id):
+        raise HTTPException(404, "Hunting map not found.")
+    db = get_database()
+    map_doc = await db.hunting_maps.find_one({"_id": ObjectId(map_id)}, {"_id": 1})
+    if not map_doc:
+        raise HTTPException(404, "Hunting map not found.")
+    now = datetime.now(timezone.utc)
+    await db.map_node_tags.update_one(
+        {"map_id": map_id, "node_id": node_id},
+        {"$set": {"tag": tag, "set_by": user.username, "set_at": now}},
+        upsert=True,
+    )
+    # Auto-insert system comment
+    display_name = body.node_name or node_id
+    await db.map_comments.insert_one({
+        "map_id": map_id,
+        "author": user.username,
+        "content": f"Tagged **{display_name}** as `{tag}`",
+        "type": "system",
+        "created_at": now,
+    })
+    return {"ok": True, "tag": tag}
+
+
+@router.delete("/hunting-maps/{map_id}/nodes/{node_id}/tag")
+async def remove_node_tag(
+    map_id: str,
+    node_id: str,
+    node_name: str | None = Query(default=None),
+    user: CurrentUser = Depends(require_role("admin")),
+):
+    """Remove the campaign status tag from a node (resets to default)."""
+    if not ObjectId.is_valid(map_id):
+        raise HTTPException(404, "Hunting map not found.")
+    db = get_database()
+    result = await db.map_node_tags.delete_one({"map_id": map_id, "node_id": node_id})
+    if result.deleted_count > 0:
+        display_name = node_name or node_id
+        await db.map_comments.insert_one({
+            "map_id": map_id,
+            "author": user.username,
+            "content": f"Removed tag from **{display_name}**",
+            "type": "system",
+            "created_at": datetime.now(timezone.utc),
+        })
+    return {"ok": True}
 
 
 # ── Refresh: re-compute stats (clients re-fetch graph after this) ────────────

@@ -543,7 +543,10 @@ async def restore_archived_vulnerability(
     else:
         await db.vulnerabilities_archive.delete_one({"fingerprint": vuln_id})
 
-    host = restored.get("host")
+    host = (
+        (restored.get("target") or {}).get("host_normalized")
+        or restored.get("host")
+    )
     if host:
         await recalculate_asset(db, str(host))
     await mark_dashboard_snapshot_dirty(db, "vulnerability-restore")
@@ -606,7 +609,10 @@ async def restore_archived_vulnerabilities_bulk(
                 upsert=True,
             )
         )
-        host = restored.get("host")
+        host = (
+            (restored.get("target") or {}).get("host_normalized")
+            or restored.get("host")
+        )
         if host:
             host_set.add(str(host))
 
